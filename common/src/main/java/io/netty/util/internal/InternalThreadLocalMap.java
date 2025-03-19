@@ -301,6 +301,7 @@ public final class InternalThreadLocalMap extends UnpaddedInternalThreadLocalMap
             lookup[index] = value;
             return oldValue == UNSET;
         } else {
+            // 扩容 indexedVariables 并设置
             expandIndexedVariableTableAndSet(index, value);
             return true;
         }

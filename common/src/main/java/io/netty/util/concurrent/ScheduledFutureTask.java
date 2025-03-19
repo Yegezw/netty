@@ -25,12 +25,21 @@ import java.util.concurrent.TimeUnit;
 
 @SuppressWarnings("ComparableImplementedButEqualsNotOverridden")
 final class ScheduledFutureTask<V> extends PromiseTask<V> implements ScheduledFuture<V>, PriorityQueueNode {
+    /**
+     * 该类所有的时间都是相对于 START_TIME 的时间
+     */
     private static final long START_TIME = System.nanoTime();
 
+    /**
+     * 当前时间 - START_TIME
+     */
     static long nanoTime() {
         return System.nanoTime() - START_TIME;
     }
 
+    /**
+     * 任务执行时间 - START_TIME
+     */
     static long deadlineNanos(long delay) {
         long deadlineNanos = nanoTime() + delay;
         // Guard against overflow
@@ -44,6 +53,9 @@ final class ScheduledFutureTask<V> extends PromiseTask<V> implements ScheduledFu
     // set once when added to priority queue
     private long id;
 
+    /**
+     * 任务执行时间 - START_TIME
+     */
     private long deadlineNanos;
     /* 0 - no repeat, >0 - repeat at fixed rate, <0 - repeat with fixed delay */
     private final long periodNanos;
@@ -101,6 +113,9 @@ final class ScheduledFutureTask<V> extends PromiseTask<V> implements ScheduledFu
         return super.executor();
     }
 
+    /**
+     * 任务执行时间 - START_TIME
+     */
     public long deadlineNanos() {
         return deadlineNanos;
     }

@@ -122,8 +122,18 @@ public class FastThreadLocal<V> {
         variablesToRemove.remove(variable);
     }
 
+    /**
+     * 在任意 FastThreadLocalThread.InternalThreadLocalMap.indexedVariables 中的索引
+     * <br>
+     * 如果 index 很大, 将会导致 InternalThreadLocalMap.indexedVariables 数组很大, 从而导致内存占用过大
+     */
     private final int index;
 
+    /**
+     * FastThreadLocal.index 全局原子递增
+     * <br>
+     * 为避免 InternalThreadLocalMap.indexedVariables 占用过多内存, FastThreadLocal 的创建数量不宜过多
+     */
     public FastThreadLocal() {
         index = InternalThreadLocalMap.nextVariableIndex();
     }
