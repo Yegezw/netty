@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ObjectPool 与 Recycler 全流程可视化动画</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap");
+
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --bg-soft: #0f172a;
+      --panel: rgba(15, 23, 42, 0.78);
+      --panel-strong: rgba(15, 23, 42, 0.92);
+      --panel-elev: rgba(30, 41, 59, 0.85);
+      --border: rgba(148, 163, 184, 0.18);
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #22c55e;
+      --accent-2: #38bdf8;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --btn-primary: linear-gradient(135deg, #22c55e, #16a34a);
+      --btn-secondary: linear-gradient(135deg, #38bdf8, #0ea5e9);
+      --btn-warn: linear-gradient(135deg, #f59e0b, #f97316);
+      --btn-danger: linear-gradient(135deg, #ef4444, #dc2626);
+      --btn-neutral: linear-gradient(135deg, #94a3b8, #64748b);
+      --shadow: 0 18px 40px rgba(2, 6, 23, 0.55);
+      --mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Fira Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(900px 520px at 10% -20%, rgba(34, 197, 94, 0.18), transparent 60%),
+        radial-gradient(900px 520px at 90% -10%, rgba(56, 189, 248, 0.16), transparent 60%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.4;
+      overflow: auto;
+    }
+
+    header {
+      height: 56px;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-strong);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0.3px;
+      color: #f8fafc;
+    }
+
+    .status {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    .status span {
+      background: var(--panel-elev);
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: #e2e8f0;
+    }
+
+    .container {
+      min-height: calc(100vh - 56px);
+      display: grid;
+      grid-template-columns: 340px 1fr 340px;
+      grid-template-rows: 1fr 220px;
+      grid-template-areas:
+        "left stage right"
+        "left log right";
+      gap: 10px;
+      padding: 10px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .left-panel { grid-area: left; }
+    .stage-panel { grid-area: stage; }
+    .right-panel { grid-area: right; }
+    .log-panel { grid-area: log; }
+
+    .panel h2 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      color: #f8fafc;
+    }
+
+    .group {
+      background: var(--panel-elev);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+
+    label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    input[type="number"] {
+      width: 100%;
+      margin-top: 6px;
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.8);
+      color: var(--text);
+      font-family: var(--mono);
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .action-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .action-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .action-row button {
+      flex: 1;
+    }
+
+    button {
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      padding: 9px 12px;
+      color: #f8fafc;
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.35);
+      transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.2s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 22px rgba(15, 23, 42, 0.5);
+      filter: brightness(1.05);
+    }
+
+    button:active {
+      transform: translateY(0);
+      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.35);
+      filter: brightness(0.98);
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-primary { background: var(--btn-primary); }
+    .btn-secondary { background: var(--btn-secondary); }
+    .btn-warn { background: var(--btn-warn); }
+    .btn-danger { background: var(--btn-danger); }
+    .btn-neutral { background: var(--btn-neutral); }
+
+    .toggle {
+      background: rgba(148, 163, 184, 0.15);
+      color: #e2e8f0;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+    }
+
+    .toggle.active {
+      background: rgba(34, 197, 94, 0.2);
+      border-color: rgba(34, 197, 94, 0.6);
+      color: #bbf7d0;
+    }
+
+    .hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    .stage-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .stage-grid {
+      display: grid;
+      grid-template-columns: 1.4fr 0.8fr;
+      grid-template-rows: auto auto;
+      grid-template-areas:
+        "owner other"
+        "inuse inuse";
+      gap: 10px;
+    }
+
+    .thread {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+    }
+
+    .thread h3 {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      color: #e2e8f0;
+    }
+
+    .owner { grid-area: owner; }
+    .other { grid-area: other; }
+    .inuse { grid-area: inuse; }
+
+    .pool {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .box {
+      border: 1px dashed rgba(148, 163, 184, 0.3);
+      border-radius: 10px;
+      padding: 8px;
+      min-height: 120px;
+      background: rgba(15, 23, 42, 0.6);
+    }
+
+    .box h4 {
+      margin: 0 0 6px 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .handle-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-height: 60px;
+    }
+
+    .handle {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-family: var(--mono);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      background: rgba(148, 163, 184, 0.12);
+      color: #e2e8f0;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .handle.available {
+      background: rgba(56, 189, 248, 0.18);
+      border-color: rgba(56, 189, 248, 0.5);
+      color: #bae6fd;
+    }
+
+    .handle.claimed {
+      background: rgba(245, 158, 11, 0.2);
+      border-color: rgba(245, 158, 11, 0.6);
+      color: #fde68a;
+    }
+
+    .handle.noop {
+      background: rgba(148, 163, 184, 0.2);
+      border-color: rgba(148, 163, 184, 0.5);
+      color: #e2e8f0;
+    }
+
+    .handle.selected {
+      box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.6);
+      transform: translateY(-1px);
+    }
+
+    .flash {
+      animation: flash 0.9s ease;
+    }
+
+    @keyframes flash {
+      0% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.6); }
+      50% { box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.0); }
+      100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.0); }
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(34, 197, 94, 0.2);
+      border: 1px solid rgba(34, 197, 94, 0.6);
+      color: #bbf7d0;
+      font-size: 11px;
+      font-family: var(--mono);
+    }
+
+    .legend {
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 6px;
+    }
+
+    .dot.available { background: #38bdf8; }
+    .dot.claimed { background: #f59e0b; }
+    .dot.noop { background: #94a3b8; }
+
+    .notes ul,
+    .roles ul {
+      margin: 6px 0 0 18px;
+      padding: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .roles summary {
+      list-style: none;
+      cursor: pointer;
+      font-size: 1.17em;
+      font-weight: 700;
+      color: #e2e8f0;
+      display: flex;
+      align-items: center;
+      margin: 0 0 6px 0;
+    }
+
+    .roles summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .roles summary::before {
+      content: '>';
+      color: var(--muted);
+      margin-right: 6px;
+      transform: translateY(-1px);
+    }
+
+    .roles[open] summary::before {
+      content: 'v';
+    }
+
+    .roles {
+      margin-top: 12px;
+    }
+
+    .log {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: #cbd5f5;
+      max-height: 180px;
+      overflow: auto;
+      display: grid;
+      gap: 6px;
+    }
+
+    .log-item {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 8px;
+      padding: 6px 8px;
+    }
+
+    .log-item.warn { border-color: rgba(245, 158, 11, 0.6); color: #fde68a; }
+    .log-item.error { border-color: rgba(239, 68, 68, 0.6); color: #fecaca; }
+
+    @media (max-width: 1200px) {
+      .container {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto;
+        grid-template-areas:
+          "left"
+          "stage"
+          "right"
+          "log";
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ObjectPool 与 Recycler 全流程可视化动画</h1>
+    <div class="status">
+      <span id="status-max">maxCapacityPerThread: 12</span>
+      <span id="status-ratio">ratio: 3</span>
+      <span id="status-chunk">chunkSize: 4</span>
+      <span id="status-batch">batch: 0 / 4</span>
+      <span id="status-queue">queue: 0 / 12</span>
+      <span id="status-thread">创建线程: 存活</span>
+    </div>
+  </header>
+
+  <div class="container">
+    <section class="panel left-panel">
+      <h2>控制台</h2>
+      <div class="group">
+        <label for="maxInput">maxCapacityPerThread</label>
+        <input id="maxInput" type="number" min="0" max="4096" value="12" />
+      </div>
+      <div class="group">
+        <label for="ratioInput">ratio</label>
+        <input id="ratioInput" type="number" min="0" max="32" value="3" />
+      </div>
+      <div class="group">
+        <label for="chunkInput">chunkSize</label>
+        <input id="chunkInput" type="number" min="2" max="64" value="4" />
+      </div>
+      <div class="group">
+        <div class="button-row">
+          <button id="toggleVirtual" class="toggle">虚拟线程: 否</button>
+          <button id="toggleDisabled" class="toggle">池化禁用: 否</button>
+          <button id="toggleOwner" class="toggle active">创建线程存活: 是</button>
+          <button id="toggleGuard" class="toggle active">回收保护: 是</button>
+        </div>
+        <div class="hint">提示: 池化禁用 或 虚拟线程 会走 NOOP 路径</div>
+      </div>
+      <div class="group">
+        <div class="action-rows">
+          <div class="action-row">
+            <button id="btnReset" class="btn-neutral">重置</button>
+          </div>
+          <div class="action-row">
+            <button id="btnGet" class="btn-primary">get()</button>
+          </div>
+          <div class="action-row">
+            <button id="btnRecycleOwner" class="btn-secondary">创建线程 recycle()</button>
+            <button id="btnRecycleOther" class="btn-warn">其它线程 recycle()</button>
+          </div>
+        </div>
+      </div>
+      <div class="group">
+        <label>当前选中对象</label>
+        <div id="selectedInfo" class="pill">无</div>
+        <div class="hint">点击 In Use 或 NOOP 区域对象即可选中</div>
+      </div>
+    </section>
+
+    <section class="panel stage-panel">
+      <h2>对象池结构</h2>
+      <div class="stage-grid">
+        <div class="thread owner">
+          <h3>创建线程 LocalPool</h3>
+          <div class="pool">
+            <div class="box">
+              <h4>batch ArrayDeque</h4>
+              <div id="batchList" class="handle-list"></div>
+            </div>
+            <div class="box">
+              <h4>pooledHandles MPSC Queue</h4>
+              <div id="queueList" class="handle-list"></div>
+            </div>
+          </div>
+        </div>
+        <div class="thread other">
+          <h3>其他线程</h3>
+          <div class="box">
+            <div class="hint">跨线程回收会进入 pooledHandles</div>
+            <div class="pill">MPSC 入队</div>
+          </div>
+        </div>
+        <div class="thread inuse">
+          <h3>In Use</h3>
+          <div id="inUseList" class="handle-list"></div>
+          <div class="box" style="margin-top: 10px;">
+            <h4>NOOP 对象</h4>
+            <div id="noopList" class="handle-list"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel right-panel">
+      <h2>图例与说明</h2>
+      <div class="legend">
+        <div><span class="dot available"></span>AVAILABLE</div>
+        <div><span class="dot claimed"></span>CLAIMED</div>
+        <div><span class="dot noop"></span>NOOP</div>
+      </div>
+      <div class="notes">
+        <h3>核心规则</h3>
+        <ul>
+          <li>batch 优先复用, 空则从队列批量拉取</li>
+          <li>newHandle 受 ratio 限制, 未命中会走 NOOP</li>
+          <li>创建线程回收优先入 batch, 其他线程回收入队列</li>
+          <li>创建线程终止后回收将失效并释放队列</li>
+        </ul>
+      </div>
+      <details class="roles">
+        <summary>角色共识</summary>
+        <ul>
+          <li>项目总设计者: 先结构后流程, 可视化分层递进</li>
+          <li>Java 初学者: 需要明确 NOOP, ratio 与跨线程路径</li>
+          <li>谷歌 Java 技术专家: 状态机与并发分支必须严谨</li>
+          <li>普林斯顿大学 Java 老师: 用动效降低认知负担</li>
+          <li>世界级前端大师: 深色层级, 控制区与舞台分离</li>
+          <li>世界级计算机图形学大师: 颜色对比与动效节奏清晰</li>
+          <li>世界级 UI 设计大师: 交互一致, 状态反馈即时</li>
+        </ul>
+      </details>
+    </section>
+
+    <section class="panel log-panel">
+      <h2>事件日志</h2>
+      <div id="logList" class="log"></div>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      maxCapacity: 12,
+      ratio: 3,
+      chunkSize: 4,
+      ratioCounter: 3,
+      virtualThread: false,
+      poolDisabled: false,
+      ownerAlive: true,
+      guardedRecycle: true,
+      nextHandleId: 1,
+      nextNoopId: 1,
+      batch: [],
+      queue: [],
+      inUse: [],
+      noop: [],
+      selected: null,
+    };
+
+    const els = {
+      maxInput: document.getElementById("maxInput"),
+      ratioInput: document.getElementById("ratioInput"),
+      chunkInput: document.getElementById("chunkInput"),
+      toggleVirtual: document.getElementById("toggleVirtual"),
+      toggleDisabled: document.getElementById("toggleDisabled"),
+      toggleOwner: document.getElementById("toggleOwner"),
+      toggleGuard: document.getElementById("toggleGuard"),
+      btnGet: document.getElementById("btnGet"),
+      btnRecycleOwner: document.getElementById("btnRecycleOwner"),
+      btnRecycleOther: document.getElementById("btnRecycleOther"),
+      btnReset: document.getElementById("btnReset"),
+      batchList: document.getElementById("batchList"),
+      queueList: document.getElementById("queueList"),
+      inUseList: document.getElementById("inUseList"),
+      noopList: document.getElementById("noopList"),
+      logList: document.getElementById("logList"),
+      selectedInfo: document.getElementById("selectedInfo"),
+      statusMax: document.getElementById("status-max"),
+      statusRatio: document.getElementById("status-ratio"),
+      statusChunk: document.getElementById("status-chunk"),
+      statusBatch: document.getElementById("status-batch"),
+      statusQueue: document.getElementById("status-queue"),
+      statusThread: document.getElementById("status-thread")
+    };
+
+    function log(message, level = "info") {
+      const item = document.createElement("div");
+      item.className = "log-item" + (level !== "info" ? " " + level : "");
+      const now = new Date();
+      const time = now.toLocaleTimeString();
+      item.textContent = time + " | " + message;
+      els.logList.appendChild(item);
+      els.logList.scrollTop = els.logList.scrollHeight;
+    }
+
+    function updateActionButtons() {
+      const ownerAllowed = state.ownerAlive;
+      els.btnGet.disabled = !ownerAllowed;
+      els.btnRecycleOwner.disabled = !ownerAllowed;
+    }
+
+    function render() {
+      els.statusMax.textContent = "maxCapacityPerThread: " + state.maxCapacity;
+      els.statusRatio.textContent = "ratio: " + state.ratio + " | counter: " + state.ratioCounter;
+      els.statusChunk.textContent = "chunkSize: " + state.chunkSize;
+      els.statusBatch.textContent = "batch: " + state.batch.length + " / " + state.chunkSize;
+      els.statusQueue.textContent = "queue: " + state.queue.length + " / " + state.maxCapacity;
+      els.statusThread.textContent = "创建线程: " + (state.ownerAlive ? "存活" : "已终止");
+
+      renderHandles(els.batchList, state.batch, "available");
+      renderHandles(els.queueList, state.queue, "available");
+      renderHandles(els.inUseList, state.inUse, "claimed");
+      renderHandles(els.noopList, state.noop, "noop");
+
+      if (state.selected) {
+        els.selectedInfo.textContent = state.selected.label;
+      } else {
+        els.selectedInfo.textContent = "无";
+      }
+
+      updateActionButtons();
+    }
+
+    function renderHandles(container, list, type) {
+      container.innerHTML = "";
+      list.forEach(handle => {
+        const chip = document.createElement("div");
+        chip.className = "handle " + type + (state.selected && state.selected.id === handle.id ? " selected" : "");
+        chip.dataset.id = handle.id;
+        chip.dataset.type = type;
+        chip.textContent = handle.label;
+        chip.addEventListener("click", () => selectHandle(handle, type));
+        container.appendChild(chip);
+      });
+    }
+
+    function selectHandle(handle, type) {
+      state.selected = { ...handle, type };
+      render();
+    }
+
+    function createHandle() {
+      const handle = { id: "H" + state.nextHandleId++, label: "H" + (state.nextHandleId - 1) };
+      return handle;
+    }
+
+    function createNoopObject() {
+      const noop = { id: "N" + state.nextNoopId++, label: "NOOP-" + (state.nextNoopId - 1) };
+      state.noop.push(noop);
+      log("使用 NOOP Handle 创建对象", "warn");
+      render();
+    }
+
+    function claim() {
+      if (state.batch.length === 0 && state.queue.length > 0) {
+        const take = Math.min(state.chunkSize, state.queue.length);
+        const drained = state.queue.splice(0, take);
+        state.batch.push(...drained);
+        log("batch 为空, 从队列批量拉取 " + take + " 个 Handle");
+      }
+      if (state.batch.length === 0) {
+        return null;
+      }
+      const handle = state.batch.pop();
+      return handle;
+    }
+
+    function newHandle() {
+      state.ratioCounter += 1;
+      if (state.ratioCounter >= state.ratio) {
+        state.ratioCounter = 0;
+        const handle = createHandle();
+        log("ratio 命中, 创建新 Handle " + handle.label);
+        return handle;
+      }
+      log("ratio 未命中, 不创建 Handle", "warn");
+      return null;
+    }
+
+    function actionGet() {
+      log("调用 get() 获取对象");
+      if (state.poolDisabled || state.virtualThread || state.maxCapacity === 0) {
+        createNoopObject();
+        return;
+      }
+      let handle = claim();
+      if (!handle) {
+        handle = newHandle();
+        if (!handle) {
+          createNoopObject();
+          return;
+        }
+      } else {
+        log("复用 Handle " + handle.label);
+      }
+      state.inUse.push(handle);
+      state.selected = { ...handle, type: "claimed" };
+      render();
+    }
+
+    function recycleHandle(byOwner) {
+      if (state.inUse.length === 0 && state.noop.length === 0) {
+        log("没有可回收对象", "warn");
+        return;
+      }
+
+      const selection = state.selected;
+      if (selection && selection.type === "noop") {
+        state.noop = state.noop.filter(item => item.id !== selection.id);
+        state.selected = null;
+        log("NOOP 对象不会进入池, 直接丢弃", "warn");
+        render();
+        return;
+      }
+
+      if (selection && selection.type === "available") {
+        log("Object " + selection.label + " has been recycled already.", "warn");
+        return;
+      }
+
+      let handle = null;
+      if (selection && selection.type === "claimed") {
+        handle = state.inUse.find(item => item.id === selection.id);
+      }
+
+      if (!handle) {
+        handle = state.inUse[state.inUse.length - 1];
+      }
+
+      if (!handle) {
+        log("没有可回收的 Handle", "warn");
+        return;
+      }
+
+      state.inUse = state.inUse.filter(item => item.id !== handle.id);
+      state.selected = null;
+
+      if (!state.ownerAlive) {
+        state.batch = [];
+        state.queue = [];
+        log("创建线程已终止, 回收队列已清空", "warn");
+        render();
+        return;
+      }
+
+      if (state.guardedRecycle) {
+        log("guarded recycle, Handle 进入 AVAILABLE 状态");
+      } else {
+        log("unguarded recycle, Handle 进入 AVAILABLE 状态", "warn");
+      }
+
+      if (byOwner && state.batch.length < state.chunkSize) {
+        state.batch.push(handle);
+        log("创建线程回收, Handle 进入 batch");
+      } else {
+        if (state.queue.length >= state.maxCapacity && state.maxCapacity > 0) {
+          log("队列已满, Handle 丢弃", "error");
+        } else {
+          state.queue.push(handle);
+          log("Handle 进入 pooledHandles 队列");
+        }
+      }
+      render();
+    }
+
+    function resetState() {
+      state.maxCapacity = Math.max(0, parseInt(els.maxInput.value || "12", 10));
+      state.ratio = Math.max(0, parseInt(els.ratioInput.value || "3", 10));
+      state.chunkSize = Math.max(2, parseInt(els.chunkInput.value || "4", 10));
+      state.ratioCounter = state.ratio;
+      state.batch = [];
+      state.queue = [];
+      state.inUse = [];
+      state.noop = [];
+      state.nextHandleId = 1;
+      state.nextNoopId = 1;
+      state.selected = null;
+      log("状态已重置");
+      render();
+    }
+
+    function toggleButton(btn, active, labelOn, labelOff) {
+      btn.classList.toggle("active", active);
+      btn.textContent = active ? labelOn : labelOff;
+    }
+
+    function setDisabled(disabled) {
+      [els.btnGet, els.btnRecycleOwner, els.btnRecycleOther, els.btnReset].forEach(btn => {
+        btn.disabled = disabled;
+      });
+    }
+
+    els.btnGet.addEventListener("click", actionGet);
+    els.btnRecycleOwner.addEventListener("click", () => recycleHandle(true));
+    els.btnRecycleOther.addEventListener("click", () => recycleHandle(false));
+    els.btnReset.addEventListener("click", resetState);
+
+    els.toggleVirtual.addEventListener("click", () => {
+      state.virtualThread = !state.virtualThread;
+      toggleButton(els.toggleVirtual, state.virtualThread, "虚拟线程: 是", "虚拟线程: 否");
+      log("虚拟线程开关: " + (state.virtualThread ? "开启" : "关闭"));
+    });
+
+    els.toggleDisabled.addEventListener("click", () => {
+      state.poolDisabled = !state.poolDisabled;
+      toggleButton(els.toggleDisabled, state.poolDisabled, "池化禁用: 是", "池化禁用: 否");
+      log("池化禁用开关: " + (state.poolDisabled ? "开启" : "关闭"));
+    });
+
+    els.toggleOwner.addEventListener("click", () => {
+      state.ownerAlive = !state.ownerAlive;
+      toggleButton(els.toggleOwner, state.ownerAlive, "创建线程存活: 是", "创建线程存活: 否");
+      log("创建线程状态: " + (state.ownerAlive ? "存活" : "已终止"), "warn");
+      render();
+    });
+
+    els.toggleGuard.addEventListener("click", () => {
+      state.guardedRecycle = !state.guardedRecycle;
+      toggleButton(els.toggleGuard, state.guardedRecycle, "回收保护: 是", "回收保护: 否");
+      log("回收保护: " + (state.guardedRecycle ? "开启" : "关闭"));
+    });
+
+    [els.maxInput, els.ratioInput, els.chunkInput].forEach(input => {
+      input.addEventListener("change", resetState);
+    });
+
+    resetState();
+  </script>
+</body>
+</html>
