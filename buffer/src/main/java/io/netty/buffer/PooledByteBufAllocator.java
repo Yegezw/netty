@@ -16,8 +16,6 @@
 
 package io.netty.buffer;
 
-import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
-
 import io.netty.util.NettyRuntime;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.FastThreadLocal;
@@ -35,12 +33,20 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
+
 public class PooledByteBufAllocator extends AbstractByteBufAllocator implements ByteBufAllocatorMetricProvider {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(PooledByteBufAllocator.class);
     private static final int DEFAULT_NUM_HEAP_ARENA;
+    /**
+     * directArenas 大小, 默认 2 * CPU 核心数
+     */
     private static final int DEFAULT_NUM_DIRECT_ARENA;
 
+    /**
+     * 默认 Page 大小 = 8 KiB
+     */
     private static final int DEFAULT_PAGE_SIZE;
     private static final int DEFAULT_MAX_ORDER; // 8192 << 11 = 16 MiB per chunk
     private static final int DEFAULT_SMALL_CACHE_SIZE;
@@ -48,6 +54,9 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
     static final int DEFAULT_MAX_CACHED_BUFFER_CAPACITY;
     private static final int DEFAULT_CACHE_TRIM_INTERVAL;
     private static final long DEFAULT_CACHE_TRIM_INTERVAL_MILLIS;
+    /**
+     * 是否为所有线程都创建自己的私有 Map, 默认为 true
+     */
     private static final boolean DEFAULT_USE_CACHE_FOR_ALL_THREADS;
     private static final int DEFAULT_DIRECT_MEMORY_CACHE_ALIGNMENT;
     static final int DEFAULT_MAX_CACHED_BYTEBUFFERS_PER_CHUNK;
@@ -102,6 +111,7 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
                         (int) Math.min(
                                 defaultMinNumArena,
                                 runtime.maxMemory() / defaultChunkSize / 2 / 3)));
+        // DefaultNumDirectArena = (堆外内存 / 2) / (每个 chunk 大小 * 3), 每个 PoolArena 可以管理 3 个 PoolChunk
         DEFAULT_NUM_DIRECT_ARENA = Math.max(0,
                 SystemPropertyUtil.getInt(
                         "io.netty.allocator.numDirectArenas",
@@ -184,6 +194,9 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
     private final int normalCacheSize;
     private final List<PoolArenaMetric> heapArenaMetrics;
     private final List<PoolArenaMetric> directArenaMetrics;
+    /**
+     * 线程私有 PoolArena
+     */
     private final PoolThreadLocalCache threadCache;
     private final int chunkSize;
     private final PooledByteBufAllocatorMetric metric;

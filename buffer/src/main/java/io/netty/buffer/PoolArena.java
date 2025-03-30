@@ -44,12 +44,12 @@ abstract class PoolArena<T> extends SizeClasses implements PoolArenaMetric {
     final int directMemoryCacheAlignmentMask;
     private final PoolSubpage<T>[] smallSubpagePools;
 
-    private final PoolChunkList<T> q050;
-    private final PoolChunkList<T> q025;
-    private final PoolChunkList<T> q000;
-    private final PoolChunkList<T> qInit;
-    private final PoolChunkList<T> q075;
-    private final PoolChunkList<T> q100;
+    private final PoolChunkList<T> q050;  // 050 ... 100
+    private final PoolChunkList<T> q025;  // 025 ... 075
+    private final PoolChunkList<T> q000;  // 001 ... 050
+    private final PoolChunkList<T> qInit; //     ... 025
+    private final PoolChunkList<T> q075;  // 075 ... 100
+    private final PoolChunkList<T> q100;  // 100 ...
 
     private final List<PoolChunkListMetric> chunkListMetrics;
 
