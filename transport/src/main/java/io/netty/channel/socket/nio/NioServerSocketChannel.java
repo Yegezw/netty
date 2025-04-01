@@ -51,6 +51,9 @@ public class NioServerSocketChannel extends AbstractNioMessageChannel
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(NioServerSocketChannel.class);
 
+    /**
+     * 创建 JDK NIO ServerSocketChannel
+     */
     private static ServerSocketChannel newSocket(SelectorProvider provider) {
         try {
             /**
@@ -66,6 +69,9 @@ public class NioServerSocketChannel extends AbstractNioMessageChannel
         }
     }
 
+    /**
+     * ServerSocketChannel 相关的配置
+     */
     private final ServerSocketChannelConfig config;
 
     /**
@@ -86,7 +92,11 @@ public class NioServerSocketChannel extends AbstractNioMessageChannel
      * Create a new instance using the given {@link ServerSocketChannel}.
      */
     public NioServerSocketChannel(ServerSocketChannel channel) {
+        // 父类 AbstractNioChannel 中保存
+        // JDK NIO 原生 ServerSocketChannel 以及要监听的事件 OP_ACCEPT
         super(null, channel, SelectionKey.OP_ACCEPT);
+        // DefaultChannelConfig 中设置用于 Channel 接收数据用的 Buffer 分配器 AdaptiveRecvByteBufAllocator
+        // bug 修复后, 使用的是 ServerChannelRecvByteBufAllocator
         config = new NioServerSocketChannelConfig(this, javaChannel().socket());
     }
 
@@ -130,6 +140,7 @@ public class NioServerSocketChannel extends AbstractNioMessageChannel
     @SuppressJava6Requirement(reason = "Usage guarded by java version check")
     @Override
     protected void doBind(SocketAddress localAddress) throws Exception {
+        // 调用 JDK NIO 底层 SelectableChannel 执行绑定操作
         if (PlatformDependent.javaVersion() >= 7) {
             javaChannel().bind(localAddress, config.getBacklog());
         } else {
@@ -148,6 +159,7 @@ public class NioServerSocketChannel extends AbstractNioMessageChannel
 
         try {
             if (ch != null) {
+                // this 是 NioServerSocketChannel, ch 是原生 SocketChannel
                 buf.add(new NioSocketChannel(this, ch));
                 return 1;
             }

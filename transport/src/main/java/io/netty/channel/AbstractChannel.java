@@ -44,9 +44,21 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(AbstractChannel.class);
 
+    /**
+     * NioServerSocketChannel 是 NioSocketChannel 的 parent
+     */
     private final Channel parent;
+    /**
+     * channel 全局唯一 ID machineId + processId + sequence + timestamp + random
+     */
     private final ChannelId id;
+    /**
+     * 封装对底层 socket 的相关操作
+     */
     private final Unsafe unsafe;
+    /**
+     * 为 channel 分配独立的 pipeline 用于 IO 事件编排
+     */
     private final DefaultChannelPipeline pipeline;
     private final VoidChannelPromise unsafeVoidPromise = new VoidChannelPromise(this, false);
     private final CloseFuture closeFuture = new CloseFuture(this);
@@ -71,6 +83,8 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
     protected AbstractChannel(Channel parent) {
         this.parent = parent;
         id = newId();
+        // 服务端 AbstractNio Message Channel.Nio Message Unsafe
+        // 客户端 AbstractNio Byte    Channel.Nio Byte    Unsafe
         unsafe = newUnsafe();
         pipeline = newChannelPipeline();
     }
@@ -275,7 +289,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
 
     @Override
     public Channel read() {
-        pipeline.read();
+        pipeline.read(); // 触发 read 事件
         return this;
     }
 
@@ -416,8 +430,14 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
      */
     protected abstract class AbstractUnsafe implements Unsafe {
 
+        /**
+         * 待发送数据缓冲队列: Netty 是全异步框架, 所以这里需要一个缓冲队列来缓存用户需要发送的数据 
+         */
         private volatile ChannelOutboundBuffer outboundBuffer = new ChannelOutboundBuffer(AbstractChannel.this);
         private RecvByteBufAllocator.Handle recvHandle;
+        /**
+         * 是否正在进行 flush 操作
+         */
         private boolean inFlush0;
         /** true if the channel has never been registered, false otherwise */
         private boolean neverRegistered = true;
@@ -429,7 +449,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
         @Override
         public RecvByteBufAllocator.Handle recvBufAllocHandle() {
             if (recvHandle == null) {
-                recvHandle = config().getRecvByteBufAllocator().newHandle();
+                recvHandle = config().getRecvByteBufAllocator().newHandle(); // AdaptiveRecvByteBufAllocator#HandleImpl->MaxMessageHandle
             }
             return recvHandle;
         }
@@ -451,19 +471,27 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
 
         @Override
         public final void register(EventLoop eventLoop, final ChannelPromise promise) {
+            // 检查 Channel 是否已经完成注册
             ObjectUtil.checkNotNull(eventLoop, "eventLoop");
             if (isRegistered()) {
                 promise.setFailure(new IllegalStateException("registered to an event loop already"));
                 return;
             }
+            // EventLoop 的类型要与 Channel 的类型一样: Nio / Oio / Aio
             if (!isCompatible(eventLoop)) {
                 promise.setFailure(
                         new IllegalStateException("incompatible event loop type: " + eventLoop.getClass().getName()));
                 return;
             }
 
+            // 为 Channel 保存它所属的 Reactor
             AbstractChannel.this.eventLoop = eventLoop;
 
+            /*
+             * 执行 Channel 注册的操作必须是 Reactor 线程来完成
+             * 1、如果当前执行线程是 Reactor 线程, 则直接执行 register0 进行注册
+             * 2、如果当前执行线程是外部线程, 则需要将 register0 注册操作封装为异步 Task 由 Reactor 线程执行
+             */
             if (eventLoop.inEventLoop()) {
                 register0(promise);
             } else {
@@ -489,24 +517,35 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
             try {
                 // check if the channel is still open as it could be closed in the mean time when the register
                 // call was outside of the eventLoop
+                // 查看注册操作是否已经取消, 或者对应 channel 已经关闭
                 if (!promise.setUncancellable() || !ensureOpen(promise)) {
                     return;
                 }
                 boolean firstRegistration = neverRegistered;
-                doRegister();
+                doRegister(); // 执行真正的注册操作 AbstractNioChannel#doRegister
                 neverRegistered = false;
                 registered = true;
 
                 // Ensure we call handlerAdded(...) before we actually notify the promise. This is needed as the
                 // user may already fire events through the pipeline in the ChannelFutureListener.
+                // 回调 pipeline 中添加的 ChannelInitializer 的 handlerAdded 方法, 在这里初始化 channelPipeline
+                // ChannelInitializer#handlerAdded -> ServerBootstrap#init#initChannel
                 pipeline.invokeHandlerAddedIfNeeded();
 
-                safeSetSuccess(promise);
+                // 设置 regFuture 为 success
+                // 触发 operationComplete 回调, 将 bind 操作放入 Reactor 的任务队列中, 等待 Reactor 线程执行
+                safeSetSuccess(promise); // MainReactor.taskQueue.offer(ServerBootstrap#doBind#bind0)
+                // 触发 channelRegister 事件
                 pipeline.fireChannelRegistered();
                 // Only fire a channelActive if the channel has never been registered. This prevents firing
                 // multiple channel actives if the channel is deregistered and re-registered.
+                // 1、对于服务端 NioServerSocketChannel 来说, 只有绑定端口地址成功后 channel 的状态才是 active 的
+                // 此时绑定操作作为异步任务在 Reactor 的任务队列中, 绑定操作还没开始, 所以这里的 isActive() 是 false
+                // 2、对于客户端 NioSocketChannel 来说, 处于 Connected 状态就是 active 的
                 if (isActive()) {
                     if (firstRegistration) {
+                        // 触发 channelActive 事件
+                        // 客户端 NioSocketChannel 注册成功后会走这里, 在 channelActive 事件回调中注册 OP_READ 事件
                         pipeline.fireChannelActive();
                     } else if (config().isAutoRead()) {
                         // This channel was registered before and autoRead() is set. This means we need to begin read
@@ -545,24 +584,27 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                         "address (" + localAddress + ") anyway as requested.");
             }
 
+            // 这时 channel 还未激活, wasActive = false
             boolean wasActive = isActive();
             try {
-                doBind(localAddress);
+                doBind(localAddress); // 调用具体 channel 实现类 NioServerSocketChannel#doBind
             } catch (Throwable t) {
                 safeSetFailure(promise, t);
                 closeIfClosed();
                 return;
             }
 
+            // 绑定成功后 channel 激活, 触发 channelActive 事件传播
             if (!wasActive && isActive()) {
                 invokeLater(new Runnable() {
                     @Override
                     public void run() {
-                        pipeline.fireChannelActive();
+                        pipeline.fireChannelActive(); // pipeline 中触发 channelActive 事件
                     }
                 });
             }
 
+            // 回调注册在 promise 上的 ChannelFutureListener
             safeSetSuccess(promise);
         }
 
@@ -836,12 +878,13 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
         public final void beginRead() {
             assertEventLoop();
 
+            // channel 必须是 Active
             if (!isActive()) {
                 return;
             }
 
             try {
-                doBeginRead();
+                doBeginRead(); // 触发在 selector 上注册 channel 感兴趣的监听事件
             } catch (final Exception e) {
                 invokeLater(new Runnable() {
                     @Override
@@ -857,6 +900,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
         public final void write(Object msg, ChannelPromise promise) {
             assertEventLoop();
 
+            // 获取当前 channel 对应的待发送数据缓冲队列(支持用户异步写入的核心关键)
             ChannelOutboundBuffer outboundBuffer = this.outboundBuffer;
             if (outboundBuffer == null) {
                 try {
@@ -875,8 +919,9 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
 
             int size;
             try {
-                msg = filterOutboundMessage(msg);
-                size = pipeline.estimatorHandle().size(msg);
+                // 过滤 message 类型, 这里只会接受 DirectByteBuffer 或者 FileRegion 类型的 msg
+                msg = filterOutboundMessage(msg); // AbstractNioByteChannel
+                size = pipeline.estimatorHandle().size(msg); // DefaultMessageSizeEstimator#size 计算当前 msg 的大小
                 if (size < 0) {
                     size = 0;
                 }
@@ -889,6 +934,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                 return;
             }
 
+            // 将 msg 加入到 Netty 中的待写入数据缓冲队列 ChannelOutboundBuffer 中
             outboundBuffer.addMessage(msg, size, promise);
         }
 
@@ -898,13 +944,21 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
 
             ChannelOutboundBuffer outboundBuffer = this.outboundBuffer;
             if (outboundBuffer == null) {
-                return;
+                return; // channel 已关闭
             }
 
+            // 将 flushedEntry 指针指向 ChannelOutboundBuffer 头结点
+            // 此时 ChannelOutboundBuffer 由 "待发送数据的缓冲队列" 变为了 "即将要 flush 进 Socket 的数据队列"
             outboundBuffer.addFlush();
-            flush0();
+            flush0(); // 将待写数据写进 Socket
         }
 
+        /**
+         * @see AbstractChannelHandlerContext#flush
+         * @see AbstractChannelHandlerContext#writeAndFlush
+         * @see io.netty.channel.nio.AbstractNioByteChannel#incompleteWrite
+         * @see io.netty.channel.nio.NioEventLoop#processSelectedKey
+         */
         @SuppressWarnings("deprecation")
         protected void flush0() {
             if (inFlush0) {
@@ -914,10 +968,25 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
 
             final ChannelOutboundBuffer outboundBuffer = this.outboundBuffer;
             if (outboundBuffer == null || outboundBuffer.isEmpty()) {
-                return;
+                return; // channel 已经关闭或者 outboundBuffer 为空
             }
 
             inFlush0 = true;
+
+            /*
+             * NioSocketChannel 处于 active 状态的条件必须是当前 NioSocketChannel 是 open 的同时处于 connected 状态
+             *
+             * !isActive() && isOpen()
+             * 说明当前 channel 处于 disConnected 状态, 这时通知给用户 channelPromise 的异常类型为 NotYetConnectedException
+             * 释放所有待发送数据占用的堆外内存, 如果此时内存占用量低于低水位线, 则设置 channel 为可写状态, 并触发 channelWritabilityChanged 事件
+             * 当 channel 处于 disConnected 状态时, 用户可以进行 write 操作但不能进行 flush 操作
+             *
+             * !isActive() && !isOpen()
+             * 说明当前 channel 处于关闭状态, 这时通知给用户 channelPromise 的异常类型为 newClosedChannelException
+             * 因为 channel 已经关闭, 所以这里并不会触发 channelWritabilityChanged 事件
+             *
+             * 当 channel 的这些异常状态校验通过之后, 则调用 doWrite 方法将 ChannelOutboundBuffer 中的待发送数据写进底层 Socket 中
+             */
 
             // Mark all pending write requests as failure if the channel is inactive.
             if (!isActive()) {
@@ -925,9 +994,13 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                     // Check if we need to generate the exception at all.
                     if (!outboundBuffer.isEmpty()) {
                         if (isOpen()) {
+                            // 当前 channel 处于 disConnected 状态
+                            // 通知 promise 写入失败, 并触发 channelWritabilityChanged 事件
                             outboundBuffer.failFlushed(new NotYetConnectedException(), true);
                         } else {
                             // Do not trigger channelWritabilityChanged because the channel is closed already.
+                            // 当前 channel 处于关闭状态
+                            // 通知 promise 写入失败, 不触发 channelWritabilityChanged 事件
                             outboundBuffer.failFlushed(newClosedChannelException(initialCloseCause, "flush0()"), false);
                         }
                     }
@@ -938,7 +1011,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
             }
 
             try {
-                doWrite(outboundBuffer);
+                doWrite(outboundBuffer); // 写入 Socket, NioSocketChannel#doWrite
             } catch (Throwable t) {
                 handleWriteError(t);
             } finally {

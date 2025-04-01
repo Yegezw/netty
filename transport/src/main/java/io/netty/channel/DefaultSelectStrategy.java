@@ -27,6 +27,16 @@ final class DefaultSelectStrategy implements SelectStrategy {
 
     @Override
     public int calculateStrategy(IntSupplier selectSupplier, boolean hasTasks) throws Exception {
+        /*
+         * Reactor 线程要保证及时的执行异步任务
+         * 1、有异步任务, 马上执行 selectNow() 非阻塞轮询一次 IO 就绪事件
+         * 2、无异步任务, 跳到 switch select 分支
+         *
+         * 结果
+         * 1、无异步任务 -1
+         * 2、有异步任务 + 有 IO 就绪事件 = 大于 0
+         * 3、有异步任务 + 无 IO 就绪事件 = 等于 0
+         */
         return hasTasks ? selectSupplier.get() : SelectStrategy.SELECT;
     }
 }

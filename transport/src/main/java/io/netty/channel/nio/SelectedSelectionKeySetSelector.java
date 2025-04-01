@@ -22,6 +22,9 @@ import java.nio.channels.spi.SelectorProvider;
 import java.util.Set;
 
 final class SelectedSelectionKeySetSelector extends Selector {
+    /**
+     * SelectedSelectionKeySet 类型的 sun.nio.ch.SelectorImpl#selectedKeys
+     */
     private final SelectedSelectionKeySet selectionKeys;
     private final Selector delegate;
 

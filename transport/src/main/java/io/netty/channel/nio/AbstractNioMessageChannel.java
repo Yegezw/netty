@@ -57,22 +57,31 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
 
     private final class NioMessageUnsafe extends AbstractNioUnsafe {
 
+        /**
+         * 存放连接建立后, 创建的客户端 NioSocketChannel
+         */
         private final List<Object> readBuf = new ArrayList<Object>();
 
         @Override
         public void read() {
+            // 必须在 Main Reactor 线程中执行
             assert eventLoop().inEventLoop();
-            final ChannelConfig config = config();
+            // config 和 pipeline 都是 NioServerSocketChannel 的
+            final ChannelConfig config = config(); // NioServerSocketChannelConfig 有 AdaptiveRecvByteBufAllocator
             final ChannelPipeline pipeline = pipeline();
-            final RecvByteBufAllocator.Handle allocHandle = unsafe().recvBufAllocHandle();
-            allocHandle.reset(config);
+            // 创建接收数据 Buffer 分配器(用于分配容量大小合适的 byteBuffer 来容纳接收数据)
+            // 在接收连接的场景中, 这里的 allocHandle 只是用于控制 read loop 的循环读取创建连接的次数
+            final RecvByteBufAllocator.Handle allocHandle = unsafe().recvBufAllocHandle(); // AdaptiveRecvByteBufAllocator#HandleImpl->MaxMessageHandle
+            allocHandle.reset(config); // 重置清除上次的统计指标
 
             boolean closed = false;
             Throwable exception = null;
             try {
                 try {
                     do {
+                        // NioServerSocketChannel#doReadMessages 创建客户端 NioSocketChannel, 并添加到 readBuf 中
                         int localRead = doReadMessages(readBuf);
+                        // 已无新的连接可接收, 退出 read loop
                         if (localRead == 0) {
                             break;
                         }
@@ -81,8 +90,9 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                             break;
                         }
 
+                        // 统计在当前事件循环中, 已经读取到的 Message 数量(创建连接的个数)
                         allocHandle.incMessagesRead(localRead);
-                    } while (allocHandle.continueReading());
+                    } while (allocHandle.continueReading()); // 判断是否已经读满 16 次
                 } catch (Throwable t) {
                     exception = t;
                 }
@@ -90,10 +100,14 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                 int size = readBuf.size();
                 for (int i = 0; i < size; i ++) {
                     readPending = false;
-                    pipeline.fireChannelRead(readBuf.get(i));
+                    // 在 NioServerSocketChannel 对应的 pipeline 中传播 ChannelRead 事件
+                    // 初始化客户端 SocketChannel, 并将其绑定到 Sub Reactor 线程组中的一个 Reactor 上
+                    pipeline.fireChannelRead(readBuf.get(i)); // ServerBootstrapAcceptor#channelRead
                 }
+                // 清除本次 accept 创建的客户端 SocketChannel 集合
                 readBuf.clear();
                 allocHandle.readComplete();
+                // 触发 readComplete 事件传播
                 pipeline.fireChannelReadComplete();
 
                 if (exception != null) {

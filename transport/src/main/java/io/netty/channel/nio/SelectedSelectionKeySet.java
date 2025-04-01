@@ -23,6 +23,9 @@ import java.util.NoSuchElementException;
 
 final class SelectedSelectionKeySet extends AbstractSet<SelectionKey> {
 
+    /**
+     * 数组, 不存在哈希冲突, 有利于 CPU 缓存行, 优化 "插入 + 遍历" 性能
+     */
     SelectionKey[] keys;
     int size;
 
@@ -77,6 +80,9 @@ final class SelectedSelectionKeySet extends AbstractSet<SelectionKey> {
                 return keys[idx++];
             }
 
+            /**
+             * 不允许删除, 可以重置
+             */
             @Override
             public void remove() {
                 throw new UnsupportedOperationException();
@@ -84,16 +90,23 @@ final class SelectedSelectionKeySet extends AbstractSet<SelectionKey> {
         };
     }
 
+    /**
+     * 不允许删除, 可以重置
+     */
     void reset() {
         reset(0);
     }
 
+    /**
+     * 不允许删除, 可以重置
+     */
     void reset(int start) {
         Arrays.fill(keys, start, size, null);
         size = 0;
     }
 
     private void increaseCapacity() {
+        // 每次扩容一倍
         SelectionKey[] newKeys = new SelectionKey[keys.length << 1];
         System.arraycopy(keys, 0, newKeys, 0, size);
         keys = newKeys;

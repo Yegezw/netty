@@ -49,17 +49,20 @@ import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
  */
 public abstract class SingleThreadEventExecutor extends AbstractScheduledEventExecutor implements OrderedEventExecutor {
 
+    /**
+     * 任务队列大小, 默认无界队列
+     */
     static final int DEFAULT_MAX_PENDING_EXECUTOR_TASKS = Math.max(16,
             SystemPropertyUtil.getInt("io.netty.eventexecutor.maxPendingTasks", Integer.MAX_VALUE));
 
     private static final InternalLogger logger =
             InternalLoggerFactory.getInstance(SingleThreadEventExecutor.class);
 
-    private static final int ST_NOT_STARTED = 1;
-    private static final int ST_STARTED = 2;
-    private static final int ST_SHUTTING_DOWN = 3;
-    private static final int ST_SHUTDOWN = 4;
-    private static final int ST_TERMINATED = 5;
+    private static final int ST_NOT_STARTED = 1;   // 未启动
+    private static final int ST_STARTED = 2;       // 已启动
+    private static final int ST_SHUTTING_DOWN = 3; // 正在关闭
+    private static final int ST_SHUTDOWN = 4;      // 已关闭
+    private static final int ST_TERMINATED = 5;    // 已终止
 
     private static final Runnable NOOP_TASK = new Runnable() {
         @Override
@@ -74,18 +77,33 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
             AtomicReferenceFieldUpdater.newUpdater(
                     SingleThreadEventExecutor.class, ThreadProperties.class, "threadProperties");
 
+    /**
+     * 普通任务队列
+     */
     private final Queue<Runnable> taskQueue;
 
     private volatile Thread thread;
     @SuppressWarnings("unused")
     private volatile ThreadProperties threadProperties;
+    /**
+     * ThreadPerTaskExecutor
+     */
     private final Executor executor;
     private volatile boolean interrupted;
 
     private final CountDownLatch threadLock = new CountDownLatch(1);
     private final Set<Runnable> shutdownHooks = new LinkedHashSet<Runnable>();
+    /**
+     * 默认 false, 往任务队列里 addTask 后，是否 "天然就能唤醒" 事件循环线程
+     */
     private final boolean addTaskWakesUp;
+    /**
+     * Reactor 异步任务队列的大小
+     */
     private final int maxPendingTasks;
+    /**
+     * 任务队列满时的拒绝策略
+     */
     private final RejectedExecutionHandler rejectedExecutionHandler;
 
     private long lastExecutionTime;
@@ -164,7 +182,8 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
     protected SingleThreadEventExecutor(EventExecutorGroup parent, Executor executor,
                                         boolean addTaskWakesUp, Queue<Runnable> taskQueue,
                                         RejectedExecutionHandler rejectedHandler) {
-        super(parent);
+        super(parent); // Reactor 所属的 EventExecutorGroup
+        // 向 Reactor 添加任务时, 是否唤醒 Selector 停止轮询 IO 就绪事件, 马上执行异步任务
         this.addTaskWakesUp = addTaskWakesUp;
         this.maxPendingTasks = DEFAULT_MAX_PENDING_EXECUTOR_TASKS;
         this.executor = ThreadExecutorMap.apply(executor, this);
@@ -284,12 +303,14 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
         }
         long nanoTime = AbstractScheduledEventExecutor.nanoTime();
         for (;;) {
+            // 从定时任务队列中取出到达执行 deadline 的定时任务 deadline <= nanoTime
             Runnable scheduledTask = pollScheduledTask(nanoTime);
             if (scheduledTask == null) {
                 return true;
             }
             if (!taskQueue.offer(scheduledTask)) {
                 // No space left in the task queue add it back to the scheduledTaskQueue so we pick it up again.
+                // taskQueue 没有空间容纳, 则再将定时任务, 重新塞进定时任务队列中, 等待下次执行
                 scheduledTaskQueue.add((ScheduledFutureTask<?>) scheduledTask);
                 return false;
             }
@@ -373,9 +394,11 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
     protected boolean runAllTasks() {
         assert inEventLoop();
         boolean fetchedAll;
-        boolean ranAtLeastOne = false;
+        boolean ranAtLeastOne = false; // 至少运行了一次
 
         do {
+            // 将到达执行时间的定时任务
+            // 转存到 taskQueue 中, 统一由 Reactor 线程从 taskQueue 中取出执行
             fetchedAll = fetchFromScheduledTaskQueue();
             if (runAllTasksFrom(taskQueue)) {
                 ranAtLeastOne = true;
@@ -385,7 +408,7 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
         if (ranAtLeastOne) {
             lastExecutionTime = ScheduledFutureTask.nanoTime();
         }
-        afterRunningAllTasks();
+        afterRunningAllTasks(); // 执行 tailTasks 任务
         return ranAtLeastOne;
     }
 
@@ -423,6 +446,7 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
      * @return {@code true} if at least one task was executed.
      */
     protected final boolean runAllTasksFrom(Queue<Runnable> taskQueue) {
+        // 返回是否执行了至少一个异步任务
         Runnable task = pollTaskFrom(taskQueue);
         if (task == null) {
             return false;
@@ -464,10 +488,12 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
         fetchFromScheduledTaskQueue();
         Runnable task = pollTask();
         if (task == null) {
+            // 普通队列中没有任务时, 执行队尾队列的任务
             afterRunningAllTasks();
             return false;
         }
 
+        // 异步任务执行超时 deadline
         final long deadline = timeoutNanos > 0 ? ScheduledFutureTask.nanoTime() + timeoutNanos : 0;
         long runTasks = 0;
         long lastExecutionTime;
@@ -476,6 +502,7 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
 
             runTasks ++;
 
+            // 每运行 64 个异步任务, 检查一下是否达到 deadline
             // Check timeout every 64 tasks because nanoTime() is relatively expensive.
             // XXX: Hard-coded value - will make it configurable if it is really a problem.
             if ((runTasks & 0x3F) == 0) {
@@ -818,6 +845,8 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
     @Override
     public void execute(Runnable task) {
         ObjectUtil.checkNotNull(task, "task");
+        // immediate 表示提交的 task 是否需要被立即执行
+        // Netty 中只要你提交的任务类型不是 LazyRunnable 类型的任务, 都是需要立即执行的, immediate = true
         execute(task, !(task instanceof LazyRunnable) && wakesUpForTask(task));
     }
 
@@ -827,8 +856,11 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
     }
 
     private void execute(Runnable task, boolean immediate) {
+        // 当前线程是否为 Reactor 线程
         boolean inEventLoop = inEventLoop();
-        addTask(task);
+        addTask(task); // taskQueue.offer(task)
+
+        // 如果当前线程不是 Reactor 线程, 则启动 Reactor 线程
         if (!inEventLoop) {
             startThread();
             if (isShutdown()) {
@@ -848,8 +880,9 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
             }
         }
 
+        // addTaskWakesUp 表示是否只有 addTask 才能唤醒 Reactor
         if (!addTaskWakesUp && immediate) {
-            wakeup(inEventLoop);
+            wakeup(inEventLoop); // NioEventLoop#wakeup
         }
     }
 
@@ -989,7 +1022,7 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
                 boolean success = false;
                 updateLastExecutionTime();
                 try {
-                    SingleThreadEventExecutor.this.run();
+                    SingleThreadEventExecutor.this.run(); // Reactor 线程开始启动 NioEventLoop#run
                     success = true;
                 } catch (Throwable t) {
                     logger.warn("Unexpected exception from an event executor: ", t);

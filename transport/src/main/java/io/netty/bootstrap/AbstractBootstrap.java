@@ -56,15 +56,31 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     @SuppressWarnings("unchecked")
     static final Map.Entry<AttributeKey<?>, Object>[] EMPTY_ATTRIBUTE_ARRAY = new Map.Entry[0];
 
+    /**
+     * Main Reactor 线程组
+     */
     volatile EventLoopGroup group;
+    /**
+     * Main Reactor ChannelFactory, 一般使用 NioServerSocketChannel 工厂
+     */
     @SuppressWarnings("deprecation")
     private volatile ChannelFactory<? extends C> channelFactory;
     private volatile SocketAddress localAddress;
 
     // The order in which ChannelOptions are applied is important they may depend on each other for validation
     // purposes.
+    /**
+     * ServerSocketChannel 中的 ChannelOption 配置
+     */
     private final Map<ChannelOption<?>, Object> options = new LinkedHashMap<ChannelOption<?>, Object>();
+    /**
+     * ServerSocketChannel 中的 attributes 配置
+     */
     private final Map<AttributeKey<?>, Object> attrs = new ConcurrentHashMap<AttributeKey<?>, Object>();
+    /**
+     * ServerSocketChannel 中 ChannelPipeline 里的 ChannelHandler<br>
+     * 如需添加多个, 使用 ChannelInitializer#initChannel() 方法
+     */
     private volatile ChannelHandler handler;
 
     AbstractBootstrap() {
@@ -264,11 +280,13 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
      * Create a new {@link Channel} and bind it.
      */
     public ChannelFuture bind(SocketAddress localAddress) {
-        validate();
+        validate(); // 校验 Netty 核心组件是否配置齐全
+        // 服务端开始启动, 绑定端口地址, 接收客户端连接
         return doBind(ObjectUtil.checkNotNull(localAddress, "localAddress"));
     }
 
     private ChannelFuture doBind(final SocketAddress localAddress) {
+        // 创建 -> 初始化 -> 异步注册 ServerSocketChannel 到 Main Reactor 上
         final ChannelFuture regFuture = initAndRegister();
         final Channel channel = regFuture.channel();
         if (regFuture.cause() != null) {
@@ -277,12 +295,14 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
 
         if (regFuture.isDone()) {
             // At this point we know that the registration was complete and successful.
+            // 如果注册完成, 则进行绑定操作
             ChannelPromise promise = channel.newPromise();
             doBind0(regFuture, channel, localAddress, promise);
             return promise;
         } else {
             // Registration future is almost always fulfilled already, but just in case it's not.
             final PendingRegistrationPromise promise = new PendingRegistrationPromise(channel);
+            // 如果此时注册操作没有完成, 则向 regFuture 添加 operationComplete 回调函数, 注册成功后回调
             regFuture.addListener(new ChannelFutureListener() {
                 @Override
                 public void operationComplete(ChannelFuture future) throws Exception {
@@ -296,6 +316,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
                         // See https://github.com/netty/netty/issues/2586
                         promise.registered();
 
+                        // 注册完成后, Reactor 线程回调这里
                         doBind0(regFuture, channel, localAddress, promise);
                     }
                 }
@@ -307,6 +328,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     final ChannelFuture initAndRegister() {
         Channel channel = null;
         try {
+            // 创建 NioServerSocketChannel 并初始化
             channel = channelFactory.newChannel();
             init(channel);
         } catch (Throwable t) {
@@ -320,7 +342,8 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
             return new DefaultChannelPromise(new FailedChannel(), GlobalEventExecutor.INSTANCE).setFailure(t);
         }
 
-        ChannelFuture regFuture = config().group().register(channel);
+        // 向 Main Reactor 线程组注册 NioServerSocketChannel
+        ChannelFuture regFuture = config().group().register(channel); // MultithreadEventLoopGroup#register
         if (regFuture.cause() != null) {
             if (channel.isRegistered()) {
                 channel.close();

@@ -56,7 +56,19 @@ public class DefaultChannelConfig implements ChannelConfig {
 
     protected final Channel channel;
 
+    /*
+     * AdaptiveRecvByteBufAllocator 只是负责动态调整 ByteBuf 的容量
+     * 而具体为 ByteBuf 申请内存空间的由 PooledByteBufAllocator 负责
+     */
+
+    /**
+     * PooledByteBufAllocator.DEFAULT 池化堆外内存分配器
+     */
     private volatile ByteBufAllocator allocator = ByteBufAllocator.DEFAULT;
+    /**
+     * AdaptiveRecvByteBufAllocator<br>
+     * 可以根据 NioSocketChannel 上每次到来的 IO 数据大小, 来自适应动态调整 ByteBuf 的容量
+     */
     private volatile RecvByteBufAllocator rcvBufAllocator;
     private volatile MessageSizeEstimator msgSizeEstimator = DEFAULT_MSG_SIZE_ESTIMATOR;
 
@@ -65,10 +77,15 @@ public class DefaultChannelConfig implements ChannelConfig {
     @SuppressWarnings("FieldMayBeFinal")
     private volatile int autoRead = 1;
     private volatile boolean autoClose = true;
+    /**
+     * ChannelOutboundBuffer 中的高低水位线
+     */
     private volatile WriteBufferWaterMark writeBufferWaterMark = WriteBufferWaterMark.DEFAULT;
     private volatile boolean pinEventExecutor = true;
 
     public DefaultChannelConfig(Channel channel) {
+        // 自适应接收字节缓冲区分配器
+        // 可以根据 Channel 上次到来的 IO 数据大小, 来自适应动态调整 ByteBuffer 的容量
         this(channel, new AdaptiveRecvByteBufAllocator());
     }
 

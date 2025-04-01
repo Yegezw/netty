@@ -53,12 +53,12 @@ import static java.lang.Math.min;
  */
 public final class ChannelOutboundBuffer {
     // Assuming a 64-bit JVM:
-    //  - 16 bytes object header
-    //  - 6 reference fields
-    //  - 2 long fields
-    //  - 2 int fields
-    //  - 1 boolean field
-    //  - padding
+    //  - 16 bytes object header  16
+    //  - 6 reference fields      24 = 4 * 6
+    //  - 2 long fields           32 = 8 * 4
+    //  - 2 int fields            16 = 4 * 2
+    //  - 1 boolean field         1
+    //  - padding                 7
     static final int CHANNEL_OUTBOUND_BUFFER_ENTRY_OVERHEAD =
             SystemPropertyUtil.getInt("io.netty.transport.outboundBufferEntrySizeOverhead", 96);
 
@@ -77,10 +77,16 @@ public final class ChannelOutboundBuffer {
     //
     // The Entry that is the first in the linked-list structure that was flushed
     private Entry flushedEntry;
-    // The Entry which is the first unflushed in the linked-list structure
-    private Entry unflushedEntry;
-    // The Entry which represents the tail of the buffer
-    private Entry tailEntry;
+
+    /**
+     * ChannelOutboundBuffer 中第一个未被 flush 进 Socket 的待发送数据
+     */
+    private Entry unflushedEntry; // The Entry which is the first unflushed in the linked-list structure
+    /**
+     * ChannelOutboundBuffer 中最后一个待发送数据的 Entry
+     */
+    private Entry tailEntry; // The Entry which represents the tail of the buffer
+
     // The number of flushed entries that are not written yet
     private int flushed;
 
@@ -92,12 +98,18 @@ public final class ChannelOutboundBuffer {
     private static final AtomicLongFieldUpdater<ChannelOutboundBuffer> TOTAL_PENDING_SIZE_UPDATER =
             AtomicLongFieldUpdater.newUpdater(ChannelOutboundBuffer.class, "totalPendingSize");
 
+    /**
+     * ChannelOutboundBuffer 中的待发送数据的内存占用总量
+     */
     @SuppressWarnings("UnusedDeclaration")
     private volatile long totalPendingSize;
 
     private static final AtomicIntegerFieldUpdater<ChannelOutboundBuffer> UNWRITABLE_UPDATER =
             AtomicIntegerFieldUpdater.newUpdater(ChannelOutboundBuffer.class, "unwritable");
 
+    /**
+     * 0 表示 channel 可写、1 表示 channel 不可写
+     */
     @SuppressWarnings("UnusedDeclaration")
     private volatile int unwritable;
 
@@ -146,8 +158,10 @@ public final class ChannelOutboundBuffer {
             }
             do {
                 flushed ++;
+                // 在 flush 发送数据流程开始时, 数据的发送流程就不能被取消了, 在这之前我们都是可以通过 ChannelPromise 取消数据发送流程的
                 if (!entry.promise.setUncancellable()) {
                     // Was cancelled so make sure we free up memory and notify about the freed bytes
+                    // 如果当前 entry 对应的 write 操作被用户取消, 则释放 msg, 并降低 channelOutboundBuffer 水位线
                     int pending = entry.cancel();
                     decrementPendingOutboundBytes(pending, false, true);
                 }
@@ -172,9 +186,11 @@ public final class ChannelOutboundBuffer {
             return;
         }
 
+        // 更新待写入数据的总大小
         long newWriteBufferSize = TOTAL_PENDING_SIZE_UPDATER.addAndGet(this, size);
+        // 如果待写入的数据 > 高水位线 64K, 则设置当前 channel 为不可写, 由用户自己决定是否继续写入
         if (newWriteBufferSize > channel.config().getWriteBufferHighWaterMark()) {
-            setUnwritable(invokeLater);
+            setUnwritable(invokeLater); // 设置当前 channel 状态为不可写, 并触发 fireChannelWritabilityChanged 事件
         }
     }
 
@@ -191,7 +207,9 @@ public final class ChannelOutboundBuffer {
             return;
         }
 
+        // 更新待写入数据的总大小
         long newWriteBufferSize = TOTAL_PENDING_SIZE_UPDATER.addAndGet(this, -size);
+        // 如果待写入的数据 < 低水位线 32K, 则设置当前 channel 为可写状态
         if (notifyWritability && newWriteBufferSize < channel.config().getWriteBufferLowWaterMark()) {
             setWritable(invokeLater);
         }
@@ -291,6 +309,7 @@ public final class ChannelOutboundBuffer {
     private boolean remove0(Throwable cause, boolean notifyWritability) {
         Entry e = flushedEntry;
         if (e == null) {
+            // 清空当前 reactor 线程缓存的所有待发送数据
             clearNioBuffers();
             return false;
         }
@@ -299,18 +318,20 @@ public final class ChannelOutboundBuffer {
         ChannelPromise promise = e.promise;
         int size = e.pendingSize;
 
-        removeEntry(e);
+        removeEntry(e); // 从 channelOutboundBuffer 中删除该 Entry 节点
 
         if (!e.cancelled) {
             // only release message, fail and decrement if it was not canceled before.
-            ReferenceCountUtil.safeRelease(msg);
+            ReferenceCountUtil.safeRelease(msg); // 释放 msg 所占用的内存空间
 
-            safeFail(promise, cause);
+            safeFail(promise, cause); // 编辑 promise 发送失败, 并通知相应的 Listener
+            // 由于 msg 得到释放, 所以需要降低 channelOutboundBuffer 中的内存占用水位线
+            // 并根据 notifyWritability 决定是否触发 ChannelWritabilityChanged 事件
             decrementPendingOutboundBytes(size, false, notifyWritability);
         }
 
         // recycle the entry
-        e.recycle();
+        e.recycle(); // 回收 Entry 实例对象
 
         return true;
     }
@@ -591,7 +612,7 @@ public final class ChannelOutboundBuffer {
             final int newValue = oldValue & ~1;
             if (UNWRITABLE_UPDATER.compareAndSet(this, oldValue, newValue)) {
                 if (oldValue != 0 && newValue == 0) {
-                    fireChannelWritabilityChanged(invokeLater);
+                    fireChannelWritabilityChanged(invokeLater); // 触发 fireChannelWritabilityChanged 事件
                 }
                 break;
             }
@@ -604,7 +625,7 @@ public final class ChannelOutboundBuffer {
             final int newValue = oldValue | 1;
             if (UNWRITABLE_UPDATER.compareAndSet(this, oldValue, newValue)) {
                 if (oldValue == 0) {
-                    fireChannelWritabilityChanged(invokeLater);
+                    fireChannelWritabilityChanged(invokeLater); // 触发 fireChannelWritabilityChanged 事件
                 }
                 break;
             }
@@ -619,13 +640,13 @@ public final class ChannelOutboundBuffer {
                 fireChannelWritabilityChangedTask = task = new Runnable() {
                     @Override
                     public void run() {
-                        pipeline.fireChannelWritabilityChanged();
+                        pipeline.fireChannelWritabilityChanged(); // 触发 fireChannelWritabilityChanged 事件
                     }
                 };
             }
             channel.eventLoop().execute(task);
         } else {
-            pipeline.fireChannelWritabilityChanged();
+            pipeline.fireChannelWritabilityChanged(); // 触发 fireChannelWritabilityChanged 事件
         }
     }
 
@@ -654,6 +675,9 @@ public final class ChannelOutboundBuffer {
             return;
         }
 
+        // 将 ChannelOutboundBuffer 中
+        // flushedEntry 与 tailEntry 之间的 Entry 对象节点全部删除
+        // 释放发送数据占用的内存空间, 同时回收 Entry 对象实例
         try {
             inFail = true;
             for (;;) {
@@ -806,16 +830,19 @@ public final class ChannelOutboundBuffer {
         });
 
         private final Handle<Entry> handle;
-        Entry next;
-        Object msg;
-        ByteBuffer[] bufs;
+
+        Entry next; // 单链表
+        Object msg; // 待发送数据 DirectByteBuffer / FileRegion
+
+        ByteBuffer[] bufs;      // msg 转换为 jdk nio 中的 ByteBuffer
         ByteBuffer buf;
-        ChannelPromise promise;
-        long progress;
-        long total;
-        int pendingSize;
-        int count = -1;
-        boolean cancelled;
+        ChannelPromise promise; // 异步 write 操作的 future
+
+        long progress;     // 已发送了多少
+        long total;        // 总共需要发送多少, 不包含 entry 对象大小
+        int pendingSize;   // entry 对象在堆中需要的内存总量: 待发送数据大小 + entry 对象本身在堆中占用内存大小(96)
+        int count = -1;    // msg 中包含了几个 jdk nio ByteBuffer
+        boolean cancelled; // write 操作是否被取消
 
         private Entry(Handle<Entry> handle) {
             this.handle = handle;

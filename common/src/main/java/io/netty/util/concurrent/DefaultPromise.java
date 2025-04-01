@@ -48,6 +48,9 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
     private static final StackTraceElement[] CANCELLATION_STACK = CANCELLATION_CAUSE_HOLDER.cause.getStackTrace();
 
     private volatile Object result;
+    /**
+     * 所属 Reactor
+     */
     private final EventExecutor executor;
     /**
      * One or more listeners. Can be a {@link GenericFutureListener} or a {@link DefaultFutureListeners}.
@@ -117,6 +120,17 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
         return setFailure0(cause);
     }
 
+    /**
+     * <p>
+     * 设置当前 future 为不可取消状态
+     * <p>
+     * 返回 true 的情况<br>
+     * 1、成功的将 future 设置为 Uncancellable<br>
+     * 2、当 future 已经成功完成
+     * <p>
+     * 返回 false 的情况<br>
+     * future 已经被取消, 不能再设置 Uncancellable 状态
+     */
     @Override
     public boolean setUncancellable() {
         if (RESULT_UPDATER.compareAndSet(this, null, UNCANCELLABLE)) {
@@ -613,7 +627,7 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
         if (RESULT_UPDATER.compareAndSet(this, null, objResult) ||
             RESULT_UPDATER.compareAndSet(this, UNCANCELLABLE, objResult)) {
             if (checkNotifyWaiters()) {
-                notifyListeners();
+                notifyListeners(); // 回调注册在 promise 上的 listeners
             }
             return true;
         }

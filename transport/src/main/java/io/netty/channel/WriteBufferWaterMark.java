@@ -32,14 +32,20 @@ import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
  */
 public final class WriteBufferWaterMark {
 
+    /**
+     * 低水位线 32K, 低于时 Channel 的状态就会变为可写状态
+     */
     private static final int DEFAULT_LOW_WATER_MARK = 32 * 1024;
+    /**
+     * 高水位线 64K, 超过时 Channel 的状态就会变为不可写状态
+     */
     private static final int DEFAULT_HIGH_WATER_MARK = 64 * 1024;
 
     public static final WriteBufferWaterMark DEFAULT =
             new WriteBufferWaterMark(DEFAULT_LOW_WATER_MARK, DEFAULT_HIGH_WATER_MARK, false);
 
-    private final int low;
-    private final int high;
+    private final int low;  // 低水位线, 默认 32K
+    private final int high; // 高水位线, 默认 64K
 
     /**
      * Create a new instance.

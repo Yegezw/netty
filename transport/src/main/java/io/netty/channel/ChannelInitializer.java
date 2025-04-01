@@ -56,6 +56,8 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(ChannelInitializer.class);
     // We use a Set as a ChannelInitializer is usually shared between all Channels in a Bootstrap /
     // ServerBootstrap. This way we can reduce the memory usage compared to use Attributes.
+    // ChannelInitializer 实例是被所有的 Channel 共享的, 用于初始化 ChannelPipeline
+    // 通过 Set 集合保存已经初始化的 ChannelPipeline, 避免重复初始化同一 ChannelPipeline
     private final Set<ChannelHandlerContext> initMap = Collections.newSetFromMap(
             new ConcurrentHashMap<ChannelHandlerContext, Boolean>());
 
@@ -75,12 +77,14 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
     public final void channelRegistered(ChannelHandlerContext ctx) throws Exception {
         // Normally this method will never be called as handlerAdded(...) should call initChannel(...) and remove
         // the handler.
+        // 当 channelRegister 事件发生时, 调用 initChannel 初始化 pipeline
         if (initChannel(ctx)) {
             // we called initChannel(...) so we need to call now pipeline.fireChannelRegistered() to ensure we not
             // miss an event.
             ctx.pipeline().fireChannelRegistered();
 
             // We are done with init the Channel, removing all the state for the Channel now.
+            // 初始化工作完成后, 需要将自身从 pipeline 中移除
             removeState(ctx);
         } else {
             // Called initChannel(...) before which is the expected behavior, so just forward the event.
@@ -112,6 +116,7 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
             if (initChannel(ctx)) {
 
                 // We are done with init the Channel, removing the initializer now.
+                // 初始化工作完成后, 需要将自身从 pipeline 中移除
                 removeState(ctx);
             }
         }
@@ -124,9 +129,10 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
 
     @SuppressWarnings("unchecked")
     private boolean initChannel(ChannelHandlerContext ctx) throws Exception {
-        if (initMap.add(ctx)) { // Guard against re-entrance.
+        if (initMap.add(ctx)) { // Guard against re-entrance. 防止重入
             try {
-                initChannel((C) ctx.channel());
+                // 第一次进入时, 调用 ServerBootstrap#init 中的 initChannel 方法
+                initChannel((C) ctx.channel()); // 此时客户端 NioSocketChannel 已经创建并初始化好了
             } catch (Throwable cause) {
                 // Explicitly call exceptionCaught(...) as we removed the handler before calling initChannel(...).
                 // We do so to prevent multiple calls to initChannel(...).
@@ -134,7 +140,7 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
             } finally {
                 ChannelPipeline pipeline = ctx.pipeline();
                 if (pipeline.context(this) != null) {
-                    pipeline.remove(this);
+                    pipeline.remove(this);  // 初始化完毕后, 从 pipeline 中移除自身
                 }
             }
             return true;
@@ -144,6 +150,7 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
 
     private void removeState(final ChannelHandlerContext ctx) {
         // The removal may happen in an async fashion if the EventExecutor we use does something funky.
+        // 从 initMap 防重 Set 集合中删除 ChannelInitializer
         if (ctx.isRemoved()) {
             initMap.remove(ctx);
         } else {

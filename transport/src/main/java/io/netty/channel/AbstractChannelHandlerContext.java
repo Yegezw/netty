@@ -88,6 +88,9 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     private final DefaultChannelPipeline pipeline;
     private final String name;
     private final boolean ordered;
+    /**
+     * ChannelHandler 执行资格掩码
+     */
     private final int executionMask;
 
     // Will be set to null if no child executor should be used, otherwise it will be set to the
@@ -705,24 +708,32 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     }
 
     void invokeWrite(Object msg, ChannelPromise promise) {
+        // 确定 ChannelHandler 是否被正确的初始化
+        // 只有触发了 handlerAdded 回调, ChannelHandler 的状态才能变成 ADD_COMPLETE
         if (invokeHandler()) {
             invokeWrite0(msg, promise);
         } else {
+            // 当前 channelHandler 虽然添加到 pipeline 中, 但是并没有调用 handlerAdded
+            // 所以不能调用当前 channelHandler 中的回调方法, 只能继续向前传递 write 事件
             write(msg, promise);
         }
     }
 
     private void invokeWrite0(Object msg, ChannelPromise promise) {
         try {
+            // 调用当前 ChannelHandler 中的 write 方法
             ((ChannelOutboundHandler) handler()).write(this, msg, promise);
         } catch (Throwable t) {
+            // 发生异常, 回调通知相关的 ChannelPromise
             notifyOutboundHandlerException(t, promise);
         }
     }
 
     @Override
     public ChannelHandlerContext flush() {
+        // 向前查找覆盖 flush 方法的 Outbound 类型的 ChannelHandler
         final AbstractChannelHandlerContext next = findContextOutbound(MASK_FLUSH);
+        // 获取执行 ChannelHandler 的 executor, 在初始化 pipeline 的时候设置, 默认为 Reactor 线程
         EventExecutor executor = next.executor();
         if (executor.inEventLoop()) {
             next.invokeFlush();
@@ -741,7 +752,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         if (invokeHandler()) {
             invokeFlush0();
         } else {
-            flush();
+            flush(); // 如果该 ChannelHandler 并没有加入到 pipeline 中则继续向前传递 flush 事件
         }
     }
 
@@ -749,6 +760,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         try {
             ((ChannelOutboundHandler) handler()).flush(this);
         } catch (Throwable t) {
+            // 发生异常, 触发 exceptionCaught 事件传播
             invokeExceptionCaught(t);
         }
     }
@@ -761,8 +773,8 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
 
     void invokeWriteAndFlush(Object msg, ChannelPromise promise) {
         if (invokeHandler()) {
-            invokeWrite0(msg, promise);
-            invokeFlush0();
+            invokeWrite0(msg, promise); // 向前传递 write 事件
+            invokeFlush0();             // 向前传递 flush 事件
         } else {
             writeAndFlush(msg, promise);
         }
@@ -781,17 +793,24 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
             throw e;
         }
 
-        final AbstractChannelHandlerContext next = findContextOutbound(flush ?
-                (MASK_WRITE | MASK_FLUSH) : MASK_WRITE);
+        // flush = false 表示调用的是 write         方法, 需要找到 pipeline 中覆盖 write         方法的 channelHandler
+        // flush = true  表示调用的是 writeAndFlush 方法, 需要找到 pipeline 中覆盖 write / flush 方法的 channelHandler
+        final AbstractChannelHandlerContext next = findContextOutbound(flush ? (MASK_WRITE | MASK_FLUSH) : MASK_WRITE);
+        // 用于检查内存泄露
         final Object m = pipeline.touch(msg, next);
+        // 获取 pipeline 中下一个要被执行的 channelHandler 的 executor
         EventExecutor executor = next.executor();
+        // 确保 OutBound 事件由 ChannelHandler 指定的 executor 执行
         if (executor.inEventLoop()) {
+            // 如果当前线程正是 ChannelHandler 指定的 executor 则直接执行
             if (flush) {
                 next.invokeWriteAndFlush(m, promise);
             } else {
                 next.invokeWrite(m, promise);
             }
         } else {
+            // 如果当前线程不是 ChannelHandler 指定的 executor
+            // 则封装成异步任务提交给指定 executor 执行, 注意这里的 executor 不一定是 reactor 线程
             final WriteTask task = WriteTask.newInstance(next, m, promise, flush);
             if (!safeExecute(executor, task, promise, m, !flush)) {
                 // We failed to submit the WriteTask. We need to cancel it so we decrement the pending bytes
@@ -884,22 +903,25 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
 
     private AbstractChannelHandlerContext findContextOutbound(int mask) {
         AbstractChannelHandlerContext ctx = this;
+        // 获取当前 ChannelHandler 的 executor
         EventExecutor currentExecutor = executor();
         do {
-            ctx = ctx.prev;
-        } while (skipContext(ctx, currentExecutor, mask, MASK_ONLY_OUTBOUND));
+            ctx = ctx.prev; // 获取前一个 ChannelHandler
+        }
+        // 判断前一个 ChannelHandler 是否具有响应 Write 事件的资格
+        while (skipContext(ctx, currentExecutor, mask, MASK_ONLY_OUTBOUND));
         return ctx;
     }
 
     private static boolean skipContext(
             AbstractChannelHandlerContext ctx, EventExecutor currentExecutor, int mask, int onlyMask) {
         // Ensure we correctly handle MASK_EXCEPTION_CAUGHT which is not included in the MASK_EXCEPTION_CAUGHT
-        return (ctx.executionMask & (onlyMask | mask)) == 0 ||
+        return (ctx.executionMask & (onlyMask | mask)) == 0 || // 判断 ChannelOutboundHandler / ChannelInboundHandler
                 // We can only skip if the EventExecutor is the same as otherwise we need to ensure we offload
                 // everything to preserve ordering.
                 //
                 // See https://github.com/netty/netty/issues/10067
-                (ctx.executor() == currentExecutor && (ctx.executionMask & mask) == 0);
+                (ctx.executor() == currentExecutor && (ctx.executionMask & mask) == 0); // 判断 ctx.Handler 是否实现了 mask
     }
 
     @Override
@@ -935,7 +957,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         // We must call setAddComplete before calling handlerAdded. Otherwise if the handlerAdded method generates
         // any pipeline events ctx.handler() will miss them because the state will not allow it.
         if (setAddComplete()) {
-            handler().handlerAdded(this);
+            handler().handlerAdded(this); // ChannelInitializer#handlerAdded
         }
     }
 

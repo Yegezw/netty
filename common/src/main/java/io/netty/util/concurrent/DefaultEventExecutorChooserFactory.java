@@ -32,6 +32,7 @@ public final class DefaultEventExecutorChooserFactory implements EventExecutorCh
 
     @Override
     public EventExecutorChooser newChooser(EventExecutor[] executors) {
+        // round-robin 轮询
         if (isPowerOfTwo(executors.length)) {
             return new PowerOfTwoEventExecutorChooser(executors);
         } else {

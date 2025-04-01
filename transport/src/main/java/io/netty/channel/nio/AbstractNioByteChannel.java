@@ -63,6 +63,8 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
      * @param ch                the underlying {@link SelectableChannel} on which it operates
      */
     protected AbstractNioByteChannel(Channel parent, SelectableChannel ch) {
+        // 父类 AbstractNioChannel 中保存
+        // JDK NIO 原生 SocketChannel 以及要监听的事件 OP_READ
         super(parent, ch, SelectionKey.OP_READ);
     }
 
@@ -133,25 +135,34 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
 
         @Override
         public final void read() {
+            // config 和 pipeline 都是 NioSocketChannel 的
             final ChannelConfig config = config();
             if (shouldBreakReadReady(config)) {
                 clearReadPending();
                 return;
             }
             final ChannelPipeline pipeline = pipeline();
-            final ByteBufAllocator allocator = config.getAllocator();
-            final RecvByteBufAllocator.Handle allocHandle = recvBufAllocHandle();
-            allocHandle.reset(config);
+
+            /*
+             * AdaptiveRecvByteBufAllocator 只是负责动态调整 ByteBuf 的容量
+             * 而具体为 ByteBuf 申请内存空间的由 PooledByteBufAllocator 负责
+             */
+
+            final ByteBufAllocator allocator = config.getAllocator();             // 用于分配 ByteBuf 的分配器 PooledByteBufAllocator
+            final RecvByteBufAllocator.Handle allocHandle = recvBufAllocHandle(); // AdaptiveRecvByteBufAllocator#HandleImpl->MaxMessageHandle
+            allocHandle.reset(config); // 重置清除上次的统计指标
 
             ByteBuf byteBuf = null;
             boolean close = false;
             try {
                 do {
-                    byteBuf = allocHandle.allocate(allocator);
-                    allocHandle.lastBytesRead(doReadBytes(byteBuf));
+                    // 利用 PooledByteBufAllocator 分配合适大小的 ByteBuf, 初始大小为 2048
+                    byteBuf = allocHandle.allocate(allocator);       // 装饰模式: 增强行为
+                    allocHandle.lastBytesRead(doReadBytes(byteBuf)); // 记录本次: 尝试读取字节数(ByteBuf 剩余可写字节数) + 实际读取字节数
+                    // 如果本次没有读取到任何字节: 退出循环, 进行下一轮事件轮询
                     if (allocHandle.lastBytesRead() <= 0) {
                         // nothing was read. release the buffer.
-                        byteBuf.release();
+                        byteBuf.release(); // 释放
                         byteBuf = null;
                         close = allocHandle.lastBytesRead() < 0;
                         if (close) {
@@ -161,13 +172,18 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                         break;
                     }
 
+                    // read loop 读取数据次数 + 1
                     allocHandle.incMessagesRead(1);
                     readPending = false;
+                    // 客户端 NioSocketChannel 的 pipeline 中触发 ChannelRead 事件
                     pipeline.fireChannelRead(byteBuf);
-                    byteBuf = null;
-                } while (allocHandle.continueReading());
+                    byteBuf = null; // 解除本次读取数据分配的 ByteBuffer 引用, 方便下一轮 read loop 分配
+                } while (allocHandle.continueReading()); // 判断是否应该继续 read loop(16 && ByteBuf 是否满载而归)
 
+                // 根据本次 read loop 总共读取的字节数, 决定下次是否扩容或者缩容
                 allocHandle.readComplete();
+                // 客户端 NioSocketChannel 的 pipeline 中触发 ChannelReadComplete 事件, 表示一次 OP_READ 事件处理完毕
+                // 但这并不表示客户端发送来的数据已经全部读完, 因为如果数据太多的话, 这里只会读取 16 次, 剩下的会等到下次 OP_READ 事件到来后再处理
                 pipeline.fireChannelReadComplete();
 
                 if (close) {
@@ -209,7 +225,7 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             // Directly return here so incompleteWrite(...) is not called.
             return 0;
         }
-        return doWriteInternal(in, in.current());
+        return doWriteInternal(in, in.current()); // 注意返回值
     }
 
     private int doWriteInternal(ChannelOutboundBuffer in, Object msg) throws Exception {
@@ -230,11 +246,13 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             }
         } else if (msg instanceof FileRegion) {
             FileRegion region = (FileRegion) msg;
+            // 文件已经传输完毕
             if (region.transferred() >= region.count()) {
                 in.remove();
                 return 0;
             }
 
+            // 零拷贝的方式传输文件
             long localFlushedAmount = doWriteFileRegion(region);
             if (localFlushedAmount > 0) {
                 in.progress(localFlushedAmount);
@@ -247,6 +265,7 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             // Should not reach here.
             throw new Error();
         }
+        // 走到这里表示: 此时 Socket 已经写不进去了, 退出 write Loop, 注册 OP_WRITE 事件
         return WRITE_STATUS_SNDBUF_FULL;
     }
 
@@ -289,15 +308,21 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
     protected final void incompleteWrite(boolean setOpWrite) {
         // Did not write completely.
         if (setOpWrite) {
-            setOpWrite();
+            // 这里处理还没写满 16 次, 但是 socket 缓冲区已满写不进去的情况
+            // 注册 OP_WRITE 事件, 什么时候 socket 可写了, epoll 会通知 Reactor 线程继续写
+            setOpWrite(); // 向 Reactor 注册 OP_WRITE 事件
         } else {
             // It is possible that we have set the write OP, woken up by NIO because the socket is writable, and then
             // use our write quantum. In this case we no longer want to set the write OP because the socket is still
             // writable (as far as we know). We will find out next time we attempt to write if the socket is writable
             // and set the write OP if necessary.
+            // 这里处理的是 socket 缓冲区依然可写, 但是写了 16 次还没写完, 这时就不能在写了, Reactor 线程需要处理其它 channel 上的 io 事件
+            // 因为此时 socket 是可写的, 必须清除 OP_WRITE 事件, 否则会一直不停地被通知
             clearOpWrite();
 
             // Schedule flush again later so other tasks can be picked up in the meantime
+            // 如果本次 write Loop 还没写完, 则提交 flushTask 到 Reactor
+            // 释放 Sub Reactor 让其可以继续处理其它 Channel 上的 IO 事件
             eventLoop().execute(flushTask);
         }
     }

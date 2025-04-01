@@ -50,9 +50,23 @@ public abstract class AbstractNioChannel extends AbstractChannel {
     private static final InternalLogger logger =
             InternalLoggerFactory.getInstance(AbstractNioChannel.class);
 
+    /**
+     * JDK NIO 原生 SelectableChannel
+     */
     private final SelectableChannel ch;
+    /**
+     * Channel 监听事件集合<br>
+     * SelectionKey.OP_ACCEPT<br>
+     * SelectionKey.OP_READ、SelectionKey.OP_CONNECT、SelectionKey.OP_WRITE
+     */
     protected final int readInterestOp;
+    /**
+     * channel 注册到 Selector 后获得的 SelectKey
+     */
     volatile SelectionKey selectionKey;
+    /**
+     * 还要不要下一次读的开关
+     */
     boolean readPending;
     private final Runnable clearReadPendingRunnable = new Runnable() {
         @Override
@@ -81,7 +95,7 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         this.ch = ch;
         this.readInterestOp = readInterestOp;
         try {
-            ch.configureBlocking(false);
+            ch.configureBlocking(false); // 设置 Channel 为非阻塞, 配合 IO 多路复用模型
         } catch (IOException e) {
             try {
                 ch.close();
@@ -377,6 +391,7 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         boolean selected = false;
         for (;;) {
             try {
+                // this 代表 NioServerSocketChannel / NioSocketChannel
                 selectionKey = javaChannel().register(eventLoop().unwrappedSelector(), 0, this);
                 return;
             } catch (CancelledKeyException e) {
@@ -409,8 +424,11 @@ public abstract class AbstractNioChannel extends AbstractChannel {
 
         readPending = true;
 
+        // NioServerSocketChannel 初始化时 readInterestOp 设置的是 OP_ACCEPT 事件
+        // NioSocketChannel       初始化时 readInterestOp 设置的是 OP_READ   事件
         final int interestOps = selectionKey.interestOps();
         if ((interestOps & readInterestOp) == 0) {
+            // 添加 OP_ACCEPT / OP_READ 事件到 interestOps 集合中
             selectionKey.interestOps(interestOps | readInterestOp);
         }
     }

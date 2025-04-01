@@ -58,9 +58,13 @@ public class DefaultChannelPipeline implements ChannelPipeline {
         }
     };
 
+    /**
+     * 原子更新 estimatorHandle 字段
+     */
     private static final AtomicReferenceFieldUpdater<DefaultChannelPipeline, MessageSizeEstimator.Handle> ESTIMATOR =
             AtomicReferenceFieldUpdater.newUpdater(
-                    DefaultChannelPipeline.class, MessageSizeEstimator.Handle.class, "estimatorHandle");
+                    DefaultChannelPipeline.class, MessageSizeEstimator.Handle.class, "estimatorHandle"
+            );
     final AbstractChannelHandlerContext head;
     final AbstractChannelHandlerContext tail;
 
@@ -70,6 +74,9 @@ public class DefaultChannelPipeline implements ChannelPipeline {
     private final boolean touch = ResourceLeakDetector.isEnabled();
 
     private Map<EventExecutorGroup, EventExecutor> childExecutors;
+    /**
+     * DefaultMessageSizeEstimator#HandleImpl 计算要发送 msg 大小的 handler
+     */
     private volatile MessageSizeEstimator.Handle estimatorHandle;
     private boolean firstRegistration = true;
 
@@ -208,12 +215,14 @@ public class DefaultChannelPipeline implements ChannelPipeline {
             // If the registered is false it means that the channel was not registered on an eventLoop yet.
             // In this case we add the context to the pipeline and add a task that will call
             // ChannelHandler.handlerAdded(...) once the channel is registered.
+            // ServerBootstrap#init 会调到这里, 此时未注册
             if (!registered) {
                 newCtx.setAddPending();
                 callHandlerCallbackLater(newCtx, true);
                 return this;
             }
 
+            // 已注册
             EventExecutor executor = newCtx.executor();
             if (!executor.inEventLoop()) {
                 callHandlerAddedInEventLoop(newCtx, executor);
@@ -1112,7 +1121,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
         // the EventLoop.
         PendingHandlerCallback task = pendingHandlerCallbackHead;
         while (task != null) {
-            task.execute();
+            task.execute(); // PendingHandlerAddedTask#execute
             task = task.next;
         }
     }
@@ -1123,7 +1132,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
         PendingHandlerCallback task = added ? new PendingHandlerAddedTask(ctx) : new PendingHandlerRemovedTask(ctx);
         PendingHandlerCallback pending = pendingHandlerCallbackHead;
         if (pending == null) {
-            pendingHandlerCallbackHead = task;
+            pendingHandlerCallbackHead = task; // 第一次 ServerBootstrap#init -> ssc.p.addLast
         } else {
             // Find the tail of the linked-list.
             while (pending.next != null) {
@@ -1331,6 +1340,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
         @Override
         public void bind(
                 ChannelHandlerContext ctx, SocketAddress localAddress, ChannelPromise promise) {
+            // AbstractChannel#bind -> JDK NIO SelectableChannel 执行底层绑定操作
             unsafe.bind(localAddress, promise);
         }
 
@@ -1359,12 +1369,12 @@ public class DefaultChannelPipeline implements ChannelPipeline {
 
         @Override
         public void read(ChannelHandlerContext ctx) {
-            unsafe.beginRead();
+            unsafe.beginRead(); // 触发注册 OP_ACCEPT 或者 OP_READ 事件
         }
 
         @Override
         public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
-            unsafe.write(msg, promise);
+            unsafe.write(msg, promise); // write 事件在 pipeline 中的传播终点
         }
 
         @Override
@@ -1395,8 +1405,11 @@ public class DefaultChannelPipeline implements ChannelPipeline {
 
         @Override
         public void channelActive(ChannelHandlerContext ctx) {
+            // pipeline 中继续向后传播 channelActive 事件
             ctx.fireChannelActive();
 
+            // 如果是 autoRead 则自动触发 read 事件传播
+            // 在 read 回调函数中, 触发 OP_ACCEPT / OP_READ 注册
             readIfIsAutoRead();
         }
 
@@ -1419,7 +1432,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
 
         private void readIfIsAutoRead() {
             if (channel.config().isAutoRead()) {
-                channel.read();
+                channel.read(); // 如果是 autoRead 则触发 read 事件传播
             }
         }
 
@@ -1434,6 +1447,9 @@ public class DefaultChannelPipeline implements ChannelPipeline {
         }
     }
 
+    /**
+     * 单链表
+     */
     private abstract static class PendingHandlerCallback implements Runnable {
         final AbstractChannelHandlerContext ctx;
         PendingHandlerCallback next;

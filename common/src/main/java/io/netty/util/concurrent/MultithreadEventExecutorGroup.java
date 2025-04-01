@@ -30,10 +30,22 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public abstract class MultithreadEventExecutorGroup extends AbstractEventExecutorGroup {
 
+    /**
+     * Reactor 集合
+     */
     private final EventExecutor[] children;
     private final Set<EventExecutor> readonlyChildren;
+    /**
+     * 记录已关闭的 Reactor 个数
+     */
     private final AtomicInteger terminatedChildren = new AtomicInteger();
+    /**
+     * 所有 EventLoop 都关闭后回调 terminationFuture.setSuccess(null)
+     */
     private final Promise<?> terminationFuture = new DefaultPromise(GlobalEventExecutor.INSTANCE);
+    /**
+     * Reactor group 的选择策略, 用于把 channel 注册到一个固定的 Reactor 上
+     */
     private final EventExecutorChooserFactory.EventExecutorChooser chooser;
 
     /**
@@ -78,10 +90,11 @@ public abstract class MultithreadEventExecutorGroup extends AbstractEventExecuto
 
         children = new EventExecutor[nThreads];
 
+        // 循环创建 Reactor
         for (int i = 0; i < nThreads; i ++) {
             boolean success = false;
             try {
-                children[i] = newChild(executor, args);
+                children[i] = newChild(executor, args); // NioEventLoopGroup#newChild
                 success = true;
             } catch (Exception e) {
                 // TODO: Think about if this is a good exception type
@@ -108,8 +121,10 @@ public abstract class MultithreadEventExecutorGroup extends AbstractEventExecuto
             }
         }
 
+        // 创建 channel 到 Reactor 的选择策略
         chooser = chooserFactory.newChooser(children);
 
+        // 创建一个 FutureListener, 用于监听所有 Reactor 的关闭事件
         final FutureListener<Object> terminationListener = new FutureListener<Object>() {
             @Override
             public void operationComplete(Future<Object> future) throws Exception {
@@ -119,6 +134,8 @@ public abstract class MultithreadEventExecutorGroup extends AbstractEventExecuto
             }
         };
 
+        // 向所有 Reactor 注册 terminated 回调函数
+        // SingleThreadEventExecutor#terminationFuture
         for (EventExecutor e: children) {
             e.terminationFuture().addListener(terminationListener);
         }

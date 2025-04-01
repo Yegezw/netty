@@ -15,11 +15,11 @@
  */
 package io.netty.channel;
 
-import static io.netty.util.internal.ObjectUtil.checkPositive;
-
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.util.UncheckedBooleanSupplier;
+
+import static io.netty.util.internal.ObjectUtil.checkPositive;
 
 /**
  * Default implementation of {@link MaxMessagesRecvByteBufAllocator} which respects {@link ChannelConfig#isAutoRead()}
@@ -86,15 +86,36 @@ public abstract class DefaultMaxMessagesRecvByteBufAllocator implements MaxMessa
      */
     public abstract class MaxMessageHandle implements ExtendedHandle {
         private ChannelConfig config;
+
+        /**
+         * 用于控制每次 read loop 里最大可以循环读取的次数, 默认 16 次<br>
+         * 可在启动配置类 ServerBootstrap 中通过 ChannelOption.MAX_MESSAGES_PER_READ 选项设置
+         */
         private int maxMessagePerRead;
+        /**
+         * NioSocketChannel 用于统计读取数据的次数<br>
+         * NioServerSocketChannel 用于统计 read loop 中总共接收的连接个数
+         */
         private int totalMessages;
+
+        /**
+         * 用于统计在 read loop 中总共接收到客户端连接上的数据大小
+         */
         private int totalBytesRead;
+        /**
+         * 本次 read loop 尝试读取多少字节 = ByteBuf 剩余可写的字节数
+         */
         private int attemptedBytesRead;
+        /**
+         * 本次 read loop 读取到的字节数
+         */
         private int lastBytesRead;
+
         private final boolean respectMaybeMoreData = DefaultMaxMessagesRecvByteBufAllocator.this.respectMaybeMoreData;
         private final UncheckedBooleanSupplier defaultMaybeMoreSupplier = new UncheckedBooleanSupplier() {
             @Override
             public boolean get() {
+                // 判断本次读取 ByteBuf 是否满载而归
                 return attemptedBytesRead == lastBytesRead;
             }
         };
@@ -140,9 +161,11 @@ public abstract class DefaultMaxMessagesRecvByteBufAllocator implements MaxMessa
         @Override
         public boolean continueReading(UncheckedBooleanSupplier maybeMoreDataSupplier) {
             return config.isAutoRead() &&
-                   (!respectMaybeMoreData || maybeMoreDataSupplier.get()) &&
-                   totalMessages < maxMessagePerRead &&
-                   totalBytesRead > 0;
+                   // respectMaybeMoreData: true 认真对待也许更多的数据、false 无脑读取
+                   (!respectMaybeMoreData || maybeMoreDataSupplier.get()) && // ByteBuf 是否满载而归
+                   totalMessages < maxMessagePerRead && // 每次 read loop 里最大可以循环读取的次数, 默认 16 次
+                   totalBytesRead > 0;                  // 本次 OP_READ 事件处理已读取到了数据
+                   // bug: NioMessageUnsafe#read 调用 incMessagesRead, 不会更新 totalBytesRead(永远为 0)
         }
 
         @Override

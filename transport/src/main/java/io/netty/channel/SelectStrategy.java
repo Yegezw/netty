@@ -26,15 +26,18 @@ import io.netty.util.IntSupplier;
 public interface SelectStrategy {
 
     /**
-     * Indicates a blocking select should follow.
+     * Indicates a blocking select should follow.<br>
+     * 没有任何异步任务需要执行, Reactor 线程可以安心的阻塞在 Selector 上等待 IO 就绪事件的来临
      */
     int SELECT = -1;
     /**
-     * Indicates the IO loop should be retried, no blocking select to follow directly.
+     * Indicates the IO loop should be retried, no blocking select to follow directly.<br>
+     * 重新开启一轮 IO 轮询
      */
     int CONTINUE = -2;
     /**
-     * Indicates the IO loop to poll for new events without blocking.
+     * Indicates the IO loop to poll for new events without blocking.<br>
+     * Reactor 线程进行自旋轮询, 由于 NIO 不支持自旋操作, 所以这里直接跳到 SelectStrategy.SELECT 策略
      */
     int BUSY_WAIT = -3;
 
