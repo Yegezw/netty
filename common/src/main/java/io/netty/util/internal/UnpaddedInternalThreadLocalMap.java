@@ -33,9 +33,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 class UnpaddedInternalThreadLocalMap {
 
     static final ThreadLocal<InternalThreadLocalMap> slowThreadLocalMap = new ThreadLocal<InternalThreadLocalMap>();
+    /**
+     * FastThreadLocal.index 全局原子自增
+     */
     static final AtomicInteger nextIndex = new AtomicInteger();
 
-    /** Used by {@link FastThreadLocal} */
+    /** 数组 - Used by {@link FastThreadLocal} */
     Object[] indexedVariables;
 
     // Core thread-locals
