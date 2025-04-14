@@ -27,18 +27,18 @@ public interface Future<V> extends java.util.concurrent.Future<V> {
 
     /**
      * Returns {@code true} if and only if the I/O operation was completed
-     * successfully.
+     * successfully. 已成功
      */
     boolean isSuccess();
 
     /**
-     * returns {@code true} if and only if the operation can be cancelled via {@link #cancel(boolean)}.
+     * returns {@code true} if and only if the operation can be cancelled via {@link #cancel(boolean)}. 可取消
      */
     boolean isCancellable();
 
     /**
      * Returns the cause of the failed I/O operation if the I/O operation has
-     * failed.
+     * failed. 异常实例
      *
      * @return the cause of the failure.
      *         {@code null} if succeeded or this future is not
@@ -46,11 +46,14 @@ public interface Future<V> extends java.util.concurrent.Future<V> {
      */
     Throwable cause();
 
+    // ------------------------------------------------
+
     /**
      * Adds the specified listener to this future.  The
      * specified listener is notified when this future is
      * {@linkplain #isDone() done}.  If this future is already
-     * completed, the specified listener is notified immediately.
+     * completed, the specified listener is notified immediately.<br>
+     * 添加监听 Future 操作完成的监听器 - 完成时将通知监听器, 已完成则会立即通知监听器
      */
     Future<V> addListener(GenericFutureListener<? extends Future<? super V>> listener);
 
@@ -80,20 +83,25 @@ public interface Future<V> extends java.util.concurrent.Future<V> {
      */
     Future<V> removeListeners(GenericFutureListener<? extends Future<? super V>>... listeners);
 
+    // ------------------------------------------------
+
     /**
      * Waits for this future until it is done, and rethrows the cause of the failure if this future
-     * failed.
+     * failed.<br>
+     * 同步等待 Future 完成, 得到最终结果(成功)或抛出异常(失败), 响应中断
      */
     Future<V> sync() throws InterruptedException;
 
     /**
      * Waits for this future until it is done, and rethrows the cause of the failure if this future
-     * failed.
+     * failed.<br>
+     * 同步等待 Future 完成, 得到最终结果(成功)或抛出异常(失败), 不响应中断
      */
     Future<V> syncUninterruptibly();
 
     /**
      * Waits for this future to be completed.
+     * <br>等待 Future 完成, 对异常无感知, 响应中断
      *
      * @throws InterruptedException
      *         if the current thread was interrupted
@@ -104,6 +112,7 @@ public interface Future<V> extends java.util.concurrent.Future<V> {
      * Waits for this future to be completed without
      * interruption.  This method catches an {@link InterruptedException} and
      * discards it silently.
+     * <br>等待 Future 完成, 对异常无感知, 不响应中断
      */
     Future<V> awaitUninterruptibly();
 
@@ -151,11 +160,15 @@ public interface Future<V> extends java.util.concurrent.Future<V> {
      */
     boolean awaitUninterruptibly(long timeoutMillis);
 
+    // ------------------------------------------------
+
     /**
      * Return the result without blocking. If the future is not done yet this will return {@code null}.
      *
      * As it is possible that a {@code null} value is used to mark the future as successful you also need to check
      * if the future is really done with {@link #isDone()} and not rely on the returned {@code null} value.
+     * <br>
+     * 由于 null 值可能被用来标记未来任务为成功, 您还需要使用 isDone() 检查 future 是否真的完成, 而不要依赖于返回的 null 值
      */
     V getNow();
 

@@ -23,6 +23,10 @@ final class DefaultFutureListeners {
     private int size;
     private int progressiveSize; // the number of progressive listeners
 
+    /**
+     * 这个构造相对特别, 是为了让 Promise 中的 listeners(Object 类型) 实例<br>
+     * 由单个 GenericFutureListener 实例转换为 DefaultFutureListeners 类型
+     */
     @SuppressWarnings("unchecked")
     DefaultFutureListeners(
             GenericFutureListener<? extends Future<?>> first, GenericFutureListener<? extends Future<?>> second) {
@@ -47,6 +51,7 @@ final class DefaultFutureListeners {
         listeners[size] = l;
         this.size = size + 1;
 
+        // 如果为 GenericProgressiveFutureListener, 则带进度指示的监听器总数量加 1
         if (l instanceof GenericProgressiveFutureListener) {
             progressiveSize ++;
         }
@@ -64,6 +69,7 @@ final class DefaultFutureListeners {
                 listeners[-- size] = null;
                 this.size = size;
 
+                // 如果为 GenericProgressiveFutureListener, 则带进度指示的监听器总数量减 1
                 if (l instanceof GenericProgressiveFutureListener) {
                     progressiveSize --;
                 }
@@ -80,6 +86,9 @@ final class DefaultFutureListeners {
         return size;
     }
 
+    /**
+     * 返回带进度指示的监听器总数量
+     */
     public int progressiveSize() {
         return progressiveSize;
     }
