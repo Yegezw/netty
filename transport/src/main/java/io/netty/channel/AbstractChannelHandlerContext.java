@@ -85,8 +85,18 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
      */
     private static final int INIT = 0;
 
+    /**
+     * ChannelHandlerContext 中持有 pipeline 的引用
+     */
     private final DefaultChannelPipeline pipeline;
+    /**
+     * 对应 channelHandler 的名称
+     */
     private final String name;
+    /**
+     * true  表示: 只有在 channelHandler 的状态为 ADD_COMPLETE 的时候才能响应 pipeline 中的事件<br>
+     * false 表示: 当 channelHandler 的状态为 ADD_PENDING 的时候, 也可以响应 pipeline 中的事件
+     */
     private final boolean ordered;
     /**
      * ChannelHandler 执行资格掩码
@@ -102,6 +112,11 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     // There is no need to make this volatile as at worse it will just create a few more instances then needed.
     private Tasks invokeTasks;
 
+    /**
+     * 状态<br>
+     * INIT -> ADD_PENDING -> [ADD_COMPLETE -> channelHandler#handlerAdded]<br>
+     * -> [channelHandler#handlerRemoved -> REMOVE_COMPLETE]
+     */
     private volatile int handlerState = INIT;
 
     AbstractChannelHandlerContext(DefaultChannelPipeline pipeline, EventExecutor executor,
@@ -109,6 +124,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         this.name = ObjectUtil.checkNotNull(name, "name");
         this.pipeline = pipeline;
         this.executor = executor;
+        // channelHandlerContext 中保存 ChannelHandler 的执行条件掩码 (ChannelHandler 是 Inbound OR Outbound ? 对什么事件感兴趣)
         this.executionMask = mask(handlerClass);
         // Its ordered if its driven by the EventLoop or the given Executor is an instanceof OrderedEventExecutor.
         ordered = executor == null || executor instanceof OrderedEventExecutor;
@@ -922,6 +938,8 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
                 //
                 // See https://github.com/netty/netty/issues/10067
                 (ctx.executor() == currentExecutor && (ctx.executionMask & mask) == 0); // 判断 ctx.Handler 是否实现了 mask
+        // 当 ctx.executor() != currentExecutor 也就是前后两个 ChannelHandler 指定的 executor 不同时
+        // 不管下一个 ChannelHandler 有没有 "覆盖实现" 指定事件的回调方法, 均不能跳过
     }
 
     @Override
@@ -956,12 +974,17 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     final void callHandlerAdded() throws Exception {
         // We must call setAddComplete before calling handlerAdded. Otherwise if the handlerAdded method generates
         // any pipeline events ctx.handler() will miss them because the state will not allow it.
+        // ctx.handlerState = ADD_COMPLETE
+        // 注意: 在回调 handlerAdded 之前将 ChannelHandler 的状态 "提前" 设置为 ADD_COMPLETE
+        // 因为用户可能在 ChannelHandler#handlerAdded 回调中触发一些事件
+        // 而如果此时 ChannelHandler 的状态不是 ADD_COMPLETE 的话, 就会停止对事件的响应, 从而错过事件的处理
         if (setAddComplete()) {
             handler().handlerAdded(this); // ChannelInitializer#handlerAdded
         }
     }
 
     final void callHandlerRemoved() throws Exception {
+        // 只有当 handlerState 为 ADD_COMPLETE 的时候才能回调 handlerRemoved
         try {
             // Only call handlerRemoved(...) if we called handlerAdded(...) before.
             if (handlerState == ADD_COMPLETE) {
@@ -969,7 +992,7 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
             }
         } finally {
             // Mark the handler as removed in any case.
-            setRemoved();
+            setRemoved(); // 设置 channelHandler 的状态为 REMOVE_COMPLETE
         }
     }
 
@@ -983,7 +1006,13 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
      */
     private boolean invokeHandler() {
         // Store in local variable to reduce volatile reads.
+        // 优化点: 用一个局部变量保存 handlerState, 减少 volatile 变量 handlerState 的读取次数
         int handlerState = this.handlerState;
+        /*
+         * ordered
+         * true  表示: 只有在 channelHandler 的状态为 ADD_COMPLETE 的时候才能响应 pipeline 中的事件
+         * false 表示: 当 channelHandler 的状态为 ADD_PENDING 的时候, 也可以响应 pipeline 中的事件
+         */
         return handlerState == ADD_COMPLETE || (!ordered && handlerState == ADD_PENDING);
     }
 

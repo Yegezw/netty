@@ -56,7 +56,7 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
      * SocketChannel 中的 attributes 配置
      */
     private final Map<AttributeKey<?>, Object> childAttrs = new ConcurrentHashMap<AttributeKey<?>, Object>();
-    private final ServerBootstrapConfig config = new ServerBootstrapConfig(this);
+
     /**
      * Sub Reactor 线程组
      */
@@ -66,6 +66,12 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
      * 如需添加多个, 使用 ChannelInitializer#initChannel() 方法
      */
     private volatile ChannelHandler childHandler;
+
+    /**
+     * 父 AbstractBootstrapConfig<br>
+     * 子 ServerBootstrapConfig
+     */
+    private final ServerBootstrapConfig config = new ServerBootstrapConfig(this);
 
     public ServerBootstrap() { }
 
@@ -163,21 +169,26 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
         final Entry<AttributeKey<?>, Object>[] currentChildAttrs = childAttrs.entrySet().toArray(EMPTY_ATTRIBUTE_ARRAY);
 
         // 向 NioServerSocketChannel 中的 pipeline 添加初始化 ChannelHandler 逻辑
-        // 当 NioServerSocketChannel 注册到 Main Reactor 线程组时, 由 Main Reactor 负责初始化
-        // 位于 ChannelInitializer#initChannel(ChannelHandlerContext ctx)
+        // 当 NioServerSocketChannel 注册到 Main Reactor 线程组时, 由 Main Reactor 负责初始化 AbstractUnsafe#register0
+        // 由于此时 Channel 还未注册到 Main Reactor, ChannelInitializer 添加到 pipeline 后
+        // 会把 ChannelInitializer#handlerAdded 包装成 PendingHandlerAddedTask 任务, 存储在 pipeline 的任务列表中
         p.addLast(
+                // Netty ChannelInitializer#handlerAdded 会被包装成一个 PendingHandlerAddedTask 任务
                 new ChannelInitializer<Channel>() {
                     @Override
                     public void initChannel(final Channel ch) {
                         // NioServerSocketChannel.pipeline
                         final ChannelPipeline pipeline = ch.pipeline();
-                        // 用户指定的 AbstractBootstrap.handler
+                        // 用户指定的 AbstractBootstrap.handler, 它可能也是 ChannelInitializer
+                        // 但此时 Channel 已经注册到 Reactor, 添加到 pipeline 后不会包装 PendingHandlerAddedTask 任务
+                        // 直接调用用户自定义的 ChannelInitializer#handlerAdded -> ChannelInitializer#initChannel
                         ChannelHandler handler = config.handler();
                         if (handler != null) {
                             pipeline.addLast(handler);
                         }
         
-                        // NioServerSocketChannel.pipeline 异步添加用于接收客户端连接的 acceptor
+                        // NioServerSocketChannel.pipeline 异步添加用于接收客户端连接的 ServerBootstrapAcceptor
+                        // ServerBootstrapAcceptor#channelRead 会初始化客户端 NioSocketChannel
                         ch.eventLoop().execute(new Runnable() {
                             @Override
                             public void run() {
@@ -246,7 +257,9 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
             final Channel child = (Channel) msg;
 
             // 向客户端 NioSocketChannel 的 pipeline 中
-            // 添加在启动配置类 ServerBootstrap 中配置的 ChannelHandler
+            // 添加在启动配置类 ServerBootstrap 中配置的 ChannelHandler (它可能是 ChannelInitializer)
+            // 由于此时 Channel 还未注册到 Sub Reactor, ChannelInitializer 添加到 pipeline 后
+            // 会把 ChannelInitializer#handlerAdded 包装成 PendingHandlerAddedTask 任务, 存储在 pipeline 的任务列表中
             child.pipeline().addLast(childHandler);
 
             // 向 NioSocketChannel 设置 NioSocketChannelConfig

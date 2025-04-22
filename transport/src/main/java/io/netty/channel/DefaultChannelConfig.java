@@ -330,9 +330,9 @@ public class DefaultChannelConfig implements ChannelConfig {
     public ChannelConfig setAutoRead(boolean autoRead) {
         boolean oldAutoRead = AUTOREAD_UPDATER.getAndSet(this, autoRead ? 1 : 0) == 1;
         if (autoRead && !oldAutoRead) {
-            channel.read();
+            channel.read();    // autoRead 从 false 变为 true
         } else if (!autoRead && oldAutoRead) {
-            autoReadCleared();
+            autoReadCleared(); // autoRead 从 true  变为 false
         }
         return this;
     }

@@ -57,7 +57,7 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
     // We use a Set as a ChannelInitializer is usually shared between all Channels in a Bootstrap /
     // ServerBootstrap. This way we can reduce the memory usage compared to use Attributes.
     // ChannelInitializer 实例是被所有的 Channel 共享的, 用于初始化 ChannelPipeline
-    // 通过 Set 集合保存已经初始化的 ChannelPipeline, 避免重复初始化同一 ChannelPipeline
+    // 通过 Set 集合保存正在初始化的 ChannelHandlerContext#ChannelPipeline, 避免并发初始化 ChannelPipeline
     private final Set<ChannelHandlerContext> initMap = Collections.newSetFromMap(
             new ConcurrentHashMap<ChannelHandlerContext, Boolean>());
 
@@ -116,7 +116,8 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
             if (initChannel(ctx)) {
 
                 // We are done with init the Channel, removing the initializer now.
-                // 初始化工作完成后, 需要将自身从 pipeline 中移除
+                // 初始化工作完成后
+                // 需要将 ChannelHandlerContext#ChannelPipeline 从 ChannelInitializer#initMap 中移除
                 removeState(ctx);
             }
         }
@@ -129,6 +130,7 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
 
     @SuppressWarnings("unchecked")
     private boolean initChannel(ChannelHandlerContext ctx) throws Exception {
+        // 向 ChannelInitializer#initMap 添加 ChannelHandlerContext#ChannelPipeline, 表示此 pipeline 正在初始化
         if (initMap.add(ctx)) { // Guard against re-entrance. 防止重入
             try {
                 // 第一次进入时, 调用 ServerBootstrap#init 中的 initChannel 方法
@@ -140,7 +142,7 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
             } finally {
                 ChannelPipeline pipeline = ctx.pipeline();
                 if (pipeline.context(this) != null) {
-                    pipeline.remove(this);  // 初始化完毕后, 从 pipeline 中移除自身
+                    pipeline.remove(this); // 初始化完毕后, 从 pipeline 中移除自身
                 }
             }
             return true;
@@ -150,7 +152,7 @@ public abstract class ChannelInitializer<C extends Channel> extends ChannelInbou
 
     private void removeState(final ChannelHandlerContext ctx) {
         // The removal may happen in an async fashion if the EventExecutor we use does something funky.
-        // 从 initMap 防重 Set 集合中删除 ChannelInitializer
+        // 从 initMap 防重 Set 集合中删除 ChannelHandlerContext#ChannelPipeline
         if (ctx.isRemoved()) {
             initMap.remove(ctx);
         } else {

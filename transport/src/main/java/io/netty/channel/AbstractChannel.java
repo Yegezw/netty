@@ -530,13 +530,13 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                 // user may already fire events through the pipeline in the ChannelFutureListener.
                 // 回调 pipeline 中添加的 ChannelInitializer 的 handlerAdded 方法, 在这里初始化 channelPipeline
                 // ChannelInitializer#handlerAdded -> ServerBootstrap#init#initChannel
-                pipeline.invokeHandlerAddedIfNeeded();
+                pipeline.invokeHandlerAddedIfNeeded(); // 调用 pipeline 中的任务链表, 执行 PendingHandlerAddedTask
 
                 // 设置 regFuture 为 success
                 // 触发 operationComplete 回调, 将 bind 操作放入 Reactor 的任务队列中, 等待 Reactor 线程执行
                 safeSetSuccess(promise); // MainReactor.taskQueue.offer(ServerBootstrap#doBind#bind0)
                 // 触发 channelRegister 事件
-                pipeline.fireChannelRegistered();
+                pipeline.fireChannelRegistered(); // HeadContext#channelRegistered
                 // Only fire a channelActive if the channel has never been registered. This prevents firing
                 // multiple channel actives if the channel is deregistered and re-registered.
                 // 1、对于服务端 NioServerSocketChannel 来说, 只有绑定端口地址成功后 channel 的状态才是 active 的
@@ -546,7 +546,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                     if (firstRegistration) {
                         // 触发 channelActive 事件
                         // 客户端 NioSocketChannel 注册成功后会走这里, 在 channelActive 事件回调中注册 OP_READ 事件
-                        pipeline.fireChannelActive();
+                        pipeline.fireChannelActive(); // HeadContext#channelActive
                     } else if (config().isAutoRead()) {
                         // This channel was registered before and autoRead() is set. This means we need to begin read
                         // again so that we process inbound data.
@@ -599,7 +599,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                 invokeLater(new Runnable() {
                     @Override
                     public void run() {
-                        pipeline.fireChannelActive(); // pipeline 中触发 channelActive 事件
+                        pipeline.fireChannelActive(); // pipeline 中触发 channelActive 事件(HeadContext#channelActive)
                     }
                 });
             }
