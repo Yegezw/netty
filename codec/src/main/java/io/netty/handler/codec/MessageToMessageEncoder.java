@@ -51,6 +51,9 @@ import java.util.List;
  */
 public abstract class MessageToMessageEncoder<I> extends ChannelOutboundHandlerAdapter {
 
+    /**
+     * 类型参数匹配器
+     */
     private final TypeParameterMatcher matcher;
 
     /**
@@ -79,14 +82,14 @@ public abstract class MessageToMessageEncoder<I> extends ChannelOutboundHandlerA
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        CodecOutputList out = null;
+        CodecOutputList out = null; // AbstractList<ByteBuf>
         try {
             if (acceptOutboundMessage(msg)) {
                 out = CodecOutputList.newInstance();
                 @SuppressWarnings("unchecked")
                 I cast = (I) msg;
                 try {
-                    encode(ctx, cast, out);
+                    encode(ctx, cast, out); // msg -> cast -> out
                 } finally {
                     ReferenceCountUtil.release(cast);
                 }

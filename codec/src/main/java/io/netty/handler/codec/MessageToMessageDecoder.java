@@ -51,6 +51,9 @@ import java.util.List;
  */
 public abstract class MessageToMessageDecoder<I> extends ChannelInboundHandlerAdapter {
 
+    /**
+     * 类型参数匹配器
+     */
     private final TypeParameterMatcher matcher;
 
     /**
@@ -79,13 +82,13 @@ public abstract class MessageToMessageDecoder<I> extends ChannelInboundHandlerAd
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-        CodecOutputList out = CodecOutputList.newInstance();
+        CodecOutputList out = CodecOutputList.newInstance(); // AbstractList<String / 自定义类>
         try {
             if (acceptInboundMessage(msg)) {
                 @SuppressWarnings("unchecked")
-                I cast = (I) msg;
+                I cast = (I) msg; // I 一般是 ByteBuf 类型
                 try {
-                    decode(ctx, cast, out);
+                    decode(ctx, cast, out); // msg -> cast -> out
                 } finally {
                     ReferenceCountUtil.release(cast);
                 }

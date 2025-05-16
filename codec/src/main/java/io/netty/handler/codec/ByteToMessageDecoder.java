@@ -151,6 +151,9 @@ public abstract class ByteToMessageDecoder extends ChannelInboundHandlerAdapter 
     private static final byte STATE_CALLING_CHILD_DECODE = 1;
     private static final byte STATE_HANDLER_REMOVED_PENDING = 2;
 
+    /**
+     * 累积的 ByteBuf
+     */
     ByteBuf cumulation;
     private Cumulator cumulator = MERGE_CUMULATOR;
     private boolean singleDecode;
@@ -268,11 +271,15 @@ public abstract class ByteToMessageDecoder extends ChannelInboundHandlerAdapter 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         if (msg instanceof ByteBuf) {
-            CodecOutputList out = CodecOutputList.newInstance();
+            CodecOutputList out = CodecOutputList.newInstance(); // AbstractList<自定义类>
             try {
                 first = cumulation == null;
-                cumulation = cumulator.cumulate(ctx.alloc(),
-                        first ? Unpooled.EMPTY_BUFFER : cumulation, (ByteBuf) msg);
+                // 累积的 ByteBuf
+                cumulation = cumulator.cumulate(
+                        ctx.alloc(),
+                        first ? Unpooled.EMPTY_BUFFER : cumulation, 
+                        (ByteBuf) msg
+                );
                 callDecode(ctx, cumulation, out);
             } catch (DecoderException e) {
                 throw e;
