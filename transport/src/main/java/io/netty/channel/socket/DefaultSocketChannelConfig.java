@@ -235,10 +235,19 @@ public class DefaultSocketChannelConfig extends DefaultChannelConfig
 
     @Override
     public SocketChannelConfig setSoLinger(int soLinger) {
+        // l_onoff  - on
+        // l_linger - linger - 秒
+        // 无论 SO_LINGER 选项是否设置, shutdown 系统调用函数均不会阻塞 (和 close 系统调用不同)
         try {
             if (soLinger < 0) {
+                // 内核默认处理 (close 系统调用会立即返回)
                 javaSocket.setSoLinger(false, 0);
             } else {
+                // soLinger = 0 立刻返回, 内核直接清空 Socket 的发送缓冲区, 并发送 RST 跳过四次挥手进入 CLOSE 状态, 这种情况下是不会有 TIME_WAIT 状态的
+                // soLinger > 0 会等待发送缓冲区的数据全部发送完成, 并收到 ACK 后再发送 FIN
+                // 1. 无论 Socket 是阻塞模式还是非阻塞模式, 应用程序都会阻塞在这里
+                // 2. 当 Socket 发送缓冲区的数据全部发送出去, 并等到对端 ACK 后, close 方法返回
+                // 3. 应用程序在 close 方法上的阻塞时间到达 l_linger 设置的值后, close 方法返回
                 javaSocket.setSoLinger(true, soLinger);
             }
         } catch (SocketException e) {

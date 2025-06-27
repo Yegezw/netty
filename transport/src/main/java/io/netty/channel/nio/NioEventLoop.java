@@ -666,10 +666,16 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     }
 
     void cancel(SelectionKey key) {
-        key.cancel(); // Selector 会将要取消的这个 SelectionKey 加入到 Selector 中的 cancelledKeys 集合中
+        // Selector 会将要取消的这个 SelectionKey 加入到 AbstractSelector#cancelledKeys 集合中
+        // 该 SelectionKey 并不会立马从 Selector 中删除, 只不过此时调用 SelectionKey#isValid 方法会返回 false
+        // 需要等到下次轮询 selector.selectNow() 的时候, 被取消掉的 SelectionKey 才会从 Selector 中被删除掉
+        // 当在本次轮询期间, 假如有大量的 Channel 从 Selector 中注销, 就绪集合 selectedKeys 中依然会保存这些 Channel 对应 SelectionKey 直到下次轮询
+        // 那么当然会影响本次轮询结果 selectedKeys 的有效性, 增加了许多不必要的遍历开销
+        key.cancel();
         cancelledKeys ++;
+        // 为了保证 Selector 中的 IO 就绪集合 selectedKeys 的有效性
         // 当从 selector 中移除的 socketChannel 数量达到 256 个, 设置 needsToSelectAgain 为 true
-        // 在 NioEventLoop#processSelectedKeysPlain 中重新做一次轮询, 将失效的 selectKey 移除, 以保证 selectKeySet 的有效性
+        // 在 NioEventLoop#processSelectedKeysPlain 每次处理 key 时都会查看 needsToSelectAgain, 重新做一次轮询, 将失效的 selectKey 移除
         if (cancelledKeys >= CLEANUP_INTERVAL) {
             cancelledKeys = 0;
             needsToSelectAgain = true;

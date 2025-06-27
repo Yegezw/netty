@@ -54,6 +54,9 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             ((AbstractNioUnsafe) unsafe()).flush0();
         }
     };
+    /**
+     * 表示 Input 已经 shutdown 了, 再次对 channel 进行读取返回 -1 设置该标志
+     */
     private boolean inputClosedSeenErrorOnRead;
 
     /**
@@ -99,15 +102,32 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
     protected class NioByteUnsafe extends AbstractNioUnsafe {
 
         private void closeOnRead(ChannelPipeline pipeline) {
+            // 判断服务端 channel 接收方向是否关闭, 这里肯定是没有关闭的
             if (!isInputShutdown0()) {
                 if (isAllowHalfClosure(config())) {
+                    // 半关闭处理流程
+                    // 1、关闭服务端 Channel 的读通道
+                    // 如果此时 Socket 接收缓冲区还有数据, 则会将这些数据统统丢弃
+                    // 注意: 关闭读通道并不会向对端发送 FIN, 此时服务端连接依然处于 CLOSE_WAIT 状态
                     shutdownInput();
+                    // 2、触发 UserEventTriggered(ChannelInputShutdownEvent) 事件
+                    // 我们可以在 ChannelInputShutdownEvent 事件的回调方法中, 向客户端发送遗留的数据, 做到真正的优雅关闭
+                    // 这里就是服务端处于 CLOSE_WAIT 状态, 在半关闭场景下, 可以继续向处于 FIN_WAIT2 状态下的客户端发送数据的地方
                     pipeline.fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
                 } else {
+                    // 如果不支持半关闭, 则服务端直接调用 close 向客户端发送 Fin, 结束 close_wait 进入 last_ack
                     close(voidPromise());
                 }
             } else {
+                // 在连接半关闭的情况下, JDK NIO Selector 会不停的通知 OP_READ 事件活跃, 所以 read loop 会一直不停的执行
+                // 当 Reactor 处理完 ChannelInputShutdownEvent 之后, 由于 Selector 又会通知 OP_READ 事件活跃, 所以半关闭流程再一次来到了 closeOnRead 方法
+                // 那么此时服务端的读通道已经关闭了 isInputShutdown0 == true, 所以流程来到 else 分支
+                // 1、设置 inputClosedSeenErrorOnRead = true 表示此时 Channel 的读通道已经关闭了, 不能再继续响应 OP_READ 事件
+                // 因为半关闭状态下, Selector 会不停的通知 OP_READ 事件, 如果不停无脑响应的话, 会造成极大的 CPU 资源浪费
                 inputClosedSeenErrorOnRead = true;
+                // 2、触发 UserEventTriggered(ChannelInputShutdownReadComplete) 事件
+                // 此事件的触发标志着: 服务端在 CLOSE_WAIT 状态下, 已经将所有遗留的数据发送给了客户端
+                // 服务端可以在该事件的回调中关闭 Channel, 结束 CLOSE_WAIT 进入 LAST_ACK 状态
                 pipeline.fireUserEventTriggered(ChannelInputShutdownReadComplete.INSTANCE);
             }
         }
@@ -117,19 +137,21 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             if (byteBuf != null) {
                 if (byteBuf.isReadable()) {
                     readPending = false;
+                    // 如果发生异常时, 已经读取到了部分数据, 则触发 ChannelRead 事件
                     pipeline.fireChannelRead(byteBuf);
                 } else {
                     byteBuf.release();
                 }
             }
             allocHandle.readComplete();
+            // 随后触发 ChannelReadComplete 事件和 ExceptionCaught 事件
             pipeline.fireChannelReadComplete();
             pipeline.fireExceptionCaught(cause);
 
             // If oom will close the read event, release connection.
             // See https://github.com/netty/netty/issues/10434
             if (close || cause instanceof OutOfMemoryError || cause instanceof IOException) {
-                closeOnRead(pipeline);
+                closeOnRead(pipeline); // 关闭连接 + 取消 Channel 注册 + 触发 ChannelInactive 事件和 ChannelUnregistered 事件
             }
         }
 
@@ -137,6 +159,10 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
         public final void read() {
             // config 和 pipeline 都是 NioSocketChannel 的
             final ChannelConfig config = config();
+            // 半关闭的状态下
+            // 在没有调用 close 方法关闭 Channel 之前, JDK NIO Selector 会一直不停的通知 OP_READ 事件, 所以流程马上又会回到 OP_READ 事件的处理方法中
+            // 那么这次我们就不能再响应 OP_READ 事件了, 需要调用 clearReadPending 方法将读事件从 Reactor 中取消掉, 停止对 OP_READ 事件的监听
+            // 否则 Reactor 线程就会 "在半关闭期间内" 一直在这里空转, 导致 CPU 100%, shouldBreakReadReady() 判断在半关闭期间是否取消 OP_READ 事件的监听
             if (shouldBreakReadReady(config)) {
                 clearReadPending();
                 return;
@@ -158,17 +184,23 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                 do {
                     // 利用 PooledByteBufAllocator 分配合适大小的 ByteBuf, 初始大小为 2048
                     byteBuf = allocHandle.allocate(allocator);       // 装饰模式: 增强行为
+                    // 对方 TCP 异常关闭, 接收到 RST 报文, 在读取 channel 中的数据时会抛出 IOException 异常  
+                    // 1、此时 Socket 接收缓冲区中只有 RST 报文, 并没有其他正常数据
+                    // 2、Socket 接收缓冲区有正常的数据 + RST 报文
                     allocHandle.lastBytesRead(doReadBytes(byteBuf)); // 记录本次: 尝试读取字节数(ByteBuf 剩余可写字节数) + 实际读取字节数
                     // 如果本次没有读取到任何字节: 退出循环, 进行下一轮事件轮询
                     if (allocHandle.lastBytesRead() <= 0) {
                         // nothing was read. release the buffer.
                         byteBuf.release(); // 释放
                         byteBuf = null;
+                        // 客户端主动关闭连接 close() 或者 shutdownOutput()
+                        // 当客户端主动关闭连接时 (客户端发送 Fin), 会触发 read 就绪事件, 这里从 channel 读取的数据会是 -1
                         close = allocHandle.lastBytesRead() < 0;
                         if (close) {
                             // There is nothing left to read as we received an EOF.
                             readPending = false;
                         }
+                        // 注意: 只会触发 ChannelReadComplete 事件而不会触发 ChannelRead 事件
                         break;
                     }
 
@@ -186,10 +218,17 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                 // 但这并不表示客户端发送来的数据已经全部读完, 因为如果数据太多的话, 这里只会读取 16 次, 剩下的会等到下次 OP_READ 事件到来后再处理
                 pipeline.fireChannelReadComplete();
 
+                // 此时客户端发送 Fin(Fin_wait_1) 主动关闭连接, 服务端接收到 Fin 并回复 ack 进入 close_wait
+                // 在服务端进入 close_wait 状态后, 需要调用 close 方法向客户端发送 Fin, 服务端才能结束 close_wait 状态
                 if (close) {
                     closeOnRead(pipeline);
                 }
             } catch (Throwable t) {
+                // 接收到 RST 报文
+                // 在调用 doReadBytes 方法从 Channel 中读取数据的时候会抛出 IOException 异常, 这里会有两种情况抛出异常
+                // 1. 此时 Socket 接收缓冲区中只有 RST 包, 并没有其它正常数据
+                // 2. Socket 接收缓冲区有正常的数据, OP_READ 事件活跃
+                //    当调用 doReadBytes 方法从 Channel 中读取数据的过程中, 对端发送 RST 强制关闭连接, 这时会在读取的过程中抛出 IOException 异常
                 handleReadException(pipeline, byteBuf, t, close, allocHandle);
             } finally {
                 // Check if there is a readPending which was not processed yet.

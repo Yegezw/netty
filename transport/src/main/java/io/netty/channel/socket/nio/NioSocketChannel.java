@@ -348,6 +348,7 @@ public class NioSocketChannel extends AbstractNioByteChannel implements io.netty
     protected int doReadBytes(ByteBuf byteBuf) throws Exception {
         final RecvByteBufAllocator.Handle allocHandle = unsafe().recvBufAllocHandle();
         allocHandle.attemptedBytesRead(byteBuf.writableBytes());
+        // Java 原生 ReadableByteChannel.read(ByteBuffer) 触发 ClosedChannelException 后, Netty 会返回 -1
         return byteBuf.writeBytes(javaChannel(), allocHandle.attemptedBytesRead());
     }
 
@@ -497,13 +498,19 @@ public class NioSocketChannel extends AbstractNioByteChannel implements io.netty
     private final class NioSocketChannelUnsafe extends NioByteUnsafe {
         @Override
         protected Executor prepareToClose() {
+            // SO_LINGER 的配置详细见 DefaultSocketChannelConfig#setSoLinger
+            // 无论 SO_LINGER 选项是否设置, shutdown 系统调用函数均不会阻塞 (和 close 系统调用不同)
             try {
                 if (javaChannel().isOpen() && config().getSoLinger() > 0) {
                     // We need to cancel this key of the channel so we may not end up in a eventloop spin
                     // because we try to read or write until the actual close happens which may be later due
                     // SO_LINGER handling.
                     // See https://github.com/netty/netty/issues/4449
+                    // 在设置 SO_LINGER 后, channel 会延时关闭, 在延时期间我们仍然可以进行读写 (关闭期间不许读写)
+                    // 这样会导致 Reactor 线程 eventloop 不断的循环浪费 CPU 资源, 所以需要在延时关闭期间将 channel 注册的事件全部取消
                     doDeregister();
+                    // 设置了 SO_LINGER, 不管是阻塞 socket 还是非阻塞 socket, 在关闭的时候都会发生阻塞
+                    // 所以这里不能使用 Reactor 线程来执行关闭任务, 否则 Reactor 线程就会被阻塞, 影响 Reactor 线程对其它 channel 的处理
                     return GlobalEventExecutor.INSTANCE;
                 }
             } catch (Throwable ignore) {
@@ -511,7 +518,7 @@ public class NioSocketChannel extends AbstractNioByteChannel implements io.netty
                 // getSoLinger() may produce an exception. In this case we just return null.
                 // See https://github.com/netty/netty/issues/4449
             }
-            return null;
+            return null; // 在没有设置 SO_LINGER 的情况下, 可以使用 Reactor 线程来执行关闭任务
         }
     }
 

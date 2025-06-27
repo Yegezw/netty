@@ -72,6 +72,7 @@ final class ChannelHandlerMask {
      * 新建连接: handlerAdded -> ChannelRegistered -> ChannelActive
      * 读写数据: ChannelRead -> write -> ChannelReadComplete -> flush
      * 关闭连接: ChannelInactive -> ChannelUnregistered -> handlerRemoved
+     * 异常关闭: ChannelRead (读到部分数据后, 读到 RST 异常) -> ChannelReadComplete -> ExceptionCaught -> ChannelInactive -> ChannelUnregistered -> handlerRemoved
      *
      * handlerAdded and handlerRemoved 可以做资源的初始化和释放工作
      * handlerAdded 事件会在 ChannelHandler 被添加到 pipeline 中时触发

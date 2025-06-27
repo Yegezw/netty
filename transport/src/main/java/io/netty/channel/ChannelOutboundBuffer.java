@@ -712,6 +712,7 @@ public final class ChannelOutboundBuffer {
         }
 
         // Release all unflushed messages.
+        // 循环清理 channelOutboundBuffer 中的 unflushedEntry, 因为在执行关闭之前有可能用户有一些数据 write 进来, 需要清理掉
         try {
             Entry e = unflushedEntry;
             while (e != null) {
@@ -720,7 +721,9 @@ public final class ChannelOutboundBuffer {
                 TOTAL_PENDING_SIZE_UPDATER.addAndGet(this, -size);
 
                 if (!e.cancelled) {
+                    // 释放 unflushedEntry 中的 bytebuffer
                     ReferenceCountUtil.safeRelease(e.msg);
+                    // 通知 unflushedEntry 中的 promise failed
                     safeFail(e.promise, cause);
                 }
                 e = e.recycleAndGetNext();
@@ -728,6 +731,7 @@ public final class ChannelOutboundBuffer {
         } finally {
             inFail = false;
         }
+        // 清理 channel 用于缓存 JDK nioBuffer 的 threadLocal 缓存 NIO_BUFFERS
         clearNioBuffers();
     }
 
