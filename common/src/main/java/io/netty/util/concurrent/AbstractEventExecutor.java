@@ -34,7 +34,15 @@ import java.util.concurrent.TimeUnit;
 public abstract class AbstractEventExecutor extends AbstractExecutorService implements EventExecutor {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(AbstractEventExecutor.class);
 
+    /**
+     * 如果在这个静默期内<br>
+     * 没有新的任务向 Reactor 提交, 那就开始关闭<br>
+     * 还有用户继续提交异步任务, 就不能关闭, 需要把静默期内用户提交的异步任务执行完毕才能关闭
+     */
     static final long DEFAULT_SHUTDOWN_QUIET_PERIOD = 2;
+    /**
+     * 如果优雅关闭超时, 那么无论此时有无异步任务需要执行, 都要开始关闭了
+     */
     static final long DEFAULT_SHUTDOWN_TIMEOUT = 15;
 
     private final EventExecutorGroup parent;

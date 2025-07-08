@@ -136,10 +136,10 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     private static final long AWAKE = -1L;
     private static final long NONE = Long.MAX_VALUE;
 
-    // nextWakeupNanos is:
+    // nextWakeupNanos is: 标识着 Reactor 线程当前的执行状态
     //    AWAKE            when EL is awake                                      苏醒
-    //    NONE             when EL is waiting with no wakeup scheduled           阻塞等待
-    //    other value T    when EL is waiting with wakeup scheduled at time T    超时等待
+    //    NONE             when EL is waiting with no wakeup scheduled           select 阻塞等待
+    //    other value T    when EL is waiting with wakeup scheduled at time T    select 超时等待
     private final AtomicLong nextWakeupNanos = new AtomicLong(AWAKE);
 
     /**
@@ -587,8 +587,11 @@ public final class NioEventLoop extends SingleThreadEventLoop {
             } finally {
                 // Always handle shutdown even if the loop processing threw an exception.
                 try {
+                    // 已经进入关闭流程
                     if (isShuttingDown()) {
+                        // 关闭 Reactor 上注册的所有 Channel + 停止处理 IO 事件, 触发 ChannelInactive + ChannelUnregistered 事件
                         closeAll();
+                        // 注销掉所有 Channel + 停止处理 IO 事件之后, 剩下的就需要执行 Reactor 中剩余的异步任务了
                         if (confirmShutdown()) {
                             return;
                         }
@@ -838,11 +841,13 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     }
 
     private void closeAll() {
+        // 清理 selector 中的一些无效 key
         selectAgain();
+        // 获取 Selector 上注册的所有 Channel
         Set<SelectionKey> keys = selector.keys();
         Collection<AbstractNioChannel> channels = new ArrayList<AbstractNioChannel>(keys.size());
         for (SelectionKey k: keys) {
-            Object a = k.attachment();
+            Object a = k.attachment(); // 获取 NioSocketChannel
             if (a instanceof AbstractNioChannel) {
                 channels.add((AbstractNioChannel) a);
             } else {
@@ -853,6 +858,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
             }
         }
 
+        // 关闭 Reactor 上注册的所有 Channel, 并在 pipeline 中触发触发 ChannelInactive + ChannelUnregistered 事件
         for (AbstractNioChannel ch: channels) {
             ch.unsafe().close(ch.unsafe().voidPromise());
         }
