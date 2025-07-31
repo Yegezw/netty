@@ -43,6 +43,10 @@ import java.util.Set;
  */
 public class FastThreadLocal<V> {
 
+    /**
+     * FastThreadLocalMap[0] 是一个特殊的位置, 里面存放的 Set 集合维护了当前线程使用到的所有 ThreadLocal 变量<br>
+     * 这个 Set 集合在当前线程退出时, 能够帮助 Netty 快速将当前线程所有未被 remove 掉的 ThreadLocal 变量以及其 value 在 O(1) 复杂度清除掉
+     */
     private static final int variablesToRemoveIndex = InternalThreadLocalMap.nextVariableIndex();
 
     /**
