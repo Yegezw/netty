@@ -864,7 +864,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
             try {
                 // 关闭 channel, 此时服务端向客户端发送 Fin2, 服务端进入 last_ack 状态
                 // 客户端收到 Fin2 后发送 ACK 并进入 time_wait 状态, 服务端收到 ACK 后进入 close 状态
-                doClose();
+                doClose(); // NioSocketChannel#doClose 读写通道同时关闭, 如果是当前是客户端, 那么收到服务器 ack 后进入 FIN_WAIT2 状态, 且无法接收服务端发送的数据, 内核接收到数据后会丢弃并发送 RST 报文给服务端
                 // 设置 closeFuture 的状态为 success, 表示 channel 已经关闭
                 // 调用 shutdownOutput 则不会通知 closeFuture
                 closeFuture.setClosed();

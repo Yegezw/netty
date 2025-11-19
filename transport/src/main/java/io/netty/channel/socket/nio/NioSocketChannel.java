@@ -167,7 +167,7 @@ public class NioSocketChannel extends AbstractNioByteChannel implements io.netty
 
     @Override
     public ChannelFuture shutdownOutput() {
-        return shutdownOutput(newPromise());
+        return shutdownOutput(newPromise()); // 关闭写通道
     }
 
     @Override
@@ -341,7 +341,7 @@ public class NioSocketChannel extends AbstractNioByteChannel implements io.netty
     @Override
     protected void doClose() throws Exception {
         super.doClose();
-        javaChannel().close();
+        javaChannel().close(); // 读写通道同时关闭
     }
 
     @Override

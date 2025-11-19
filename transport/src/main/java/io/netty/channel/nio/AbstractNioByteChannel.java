@@ -104,6 +104,7 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
         private void closeOnRead(ChannelPipeline pipeline) {
             // 判断服务端 channel 接收方向是否关闭, 这里肯定是没有关闭的
             if (!isInputShutdown0()) {
+                // 可通过 ServerBootstrap.childOption(ChannelOption.ALLOW_HALF_CLOSURE, true) 开启半关闭的支持
                 if (isAllowHalfClosure(config())) {
                     // 半关闭处理流程
                     // 1、关闭服务端 Channel 的读通道
@@ -184,8 +185,8 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                 do {
                     // 利用 PooledByteBufAllocator 分配合适大小的 ByteBuf, 初始大小为 2048
                     byteBuf = allocHandle.allocate(allocator);       // 装饰模式: 增强行为
-                    // 对方 TCP 异常关闭, 接收到 RST 报文, 在读取 channel 中的数据时会抛出 IOException 异常  
-                    // 1、此时 Socket 接收缓冲区中只有 RST 报文, 并没有其他正常数据
+                    // 当对方 TCP 异常关闭, 这里会接收到 RST 报文, 在读取 channel 中的数据时就会抛出 IOException 异常  
+                    // 1、此时 Socket 接收缓冲区中只有 RST 报文, 并没有其它正常数据
                     // 2、Socket 接收缓冲区有正常的数据 + RST 报文
                     allocHandle.lastBytesRead(doReadBytes(byteBuf)); // 记录本次: 尝试读取字节数(ByteBuf 剩余可写字节数) + 实际读取字节数
                     // 如果本次没有读取到任何字节: 退出循环, 进行下一轮事件轮询
@@ -221,7 +222,7 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                 // 此时客户端发送 Fin(Fin_wait_1) 主动关闭连接, 服务端接收到 Fin 并回复 ack 进入 close_wait
                 // 在服务端进入 close_wait 状态后, 需要调用 close 方法向客户端发送 Fin, 服务端才能结束 close_wait 状态
                 if (close) {
-                    closeOnRead(pipeline);
+                    closeOnRead(pipeline); // 正常关闭
                 }
             } catch (Throwable t) {
                 // 接收到 RST 报文
@@ -229,7 +230,7 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                 // 1. 此时 Socket 接收缓冲区中只有 RST 包, 并没有其它正常数据
                 // 2. Socket 接收缓冲区有正常的数据, OP_READ 事件活跃
                 //    当调用 doReadBytes 方法从 Channel 中读取数据的过程中, 对端发送 RST 强制关闭连接, 这时会在读取的过程中抛出 IOException 异常
-                handleReadException(pipeline, byteBuf, t, close, allocHandle);
+                handleReadException(pipeline, byteBuf, t, close, allocHandle); // 异常关闭
             } finally {
                 // Check if there is a readPending which was not processed yet.
                 // This could be for two reasons:
