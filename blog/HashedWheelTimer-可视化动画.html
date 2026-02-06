@@ -1,0 +1,1666 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HashedWheelTimer 全流程可视化动画</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
+
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --bg-soft: #0f172a;
+      --panel: rgba(15, 23, 42, 0.78);
+      --panel-strong: rgba(15, 23, 42, 0.92);
+      --panel-elev: rgba(30, 41, 59, 0.85);
+      --border: rgba(148, 163, 184, 0.18);
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #22c55e;
+      --accent-2: #38bdf8;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --btn-primary: linear-gradient(135deg, #22c55e, #16a34a);
+      --btn-secondary: linear-gradient(135deg, #38bdf8, #0ea5e9);
+      --btn-warn: linear-gradient(135deg, #f59e0b, #f97316);
+      --btn-danger: linear-gradient(135deg, #ef4444, #dc2626);
+      --btn-neutral: linear-gradient(135deg, #475569, #334155);
+      --shadow: 0 18px 40px rgba(2, 6, 23, 0.55);
+      --mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Fira Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(900px 520px at 10% -20%, rgba(34, 197, 94, 0.18), transparent 60%),
+        radial-gradient(900px 520px at 90% -10%, rgba(56, 189, 248, 0.16), transparent 60%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.4;
+      overflow: auto;
+    }
+
+    header {
+      height: 52px;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-strong);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0.2px;
+      color: #f8fafc;
+    }
+
+    .status {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    .status span {
+      background: var(--panel-elev);
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: #e2e8f0;
+    }
+
+    .container {
+      min-height: calc(100vh - 52px);
+      display: grid;
+      grid-template-columns: 340px 1fr 320px;
+      grid-template-areas:
+        "left top right"
+        "left wheel right"
+        "left log consensus";
+      grid-template-rows: auto auto 1fr;
+      gap: 10px;
+      padding: 10px;
+    }
+
+    .left-panel { grid-area: left; }
+    .top-controls { grid-area: top; }
+    .wheel-panel { grid-area: wheel; }
+    .right-panel { grid-area: right; }
+    .log-panel { grid-area: log; }
+    .consensus-panel { grid-area: consensus; }
+
+    .top-controls .three-col {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+      flex-wrap: nowrap;
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    .top-controls .col {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .top-controls .button-row {
+      flex-wrap: wrap;
+      overflow-x: visible;
+      padding-bottom: 0;
+      justify-content: flex-start;
+    }
+
+    .top-controls .button-row button {
+      flex: 0 0 auto;
+    }
+
+    .top-controls {
+      justify-self: stretch;
+      align-self: start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+
+    .panel h2 {
+      margin: 0 0 8px 0;
+      font-size: 12px;
+      color: var(--accent-2);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+
+    .panel-scroll {
+      overflow: auto;
+    }
+
+    .group {
+      padding: 6px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel-elev);
+      margin-bottom: 8px;
+    }
+
+    .group-title {
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      letter-spacing: 0.2px;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .controls button,
+    .top-controls button {
+      height: 32px;
+      padding: 0 12px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      color: #0b1220;
+      background: var(--btn-primary);
+      font-weight: 600;
+      font-size: 11px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 10px 18px rgba(34, 197, 94, 0.3);
+      transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+    }
+
+    .controls button.secondary,
+    .top-controls button.secondary {
+      background: var(--btn-secondary);
+      box-shadow: 0 10px 18px rgba(56, 189, 248, 0.3);
+    }
+
+    .controls button.warn,
+    .top-controls button.warn {
+      background: var(--btn-warn);
+      box-shadow: 0 10px 18px rgba(245, 158, 11, 0.3);
+    }
+
+    .controls button.danger,
+    .top-controls button.danger {
+      background: var(--btn-danger);
+      box-shadow: 0 10px 18px rgba(239, 68, 68, 0.3);
+    }
+
+    #btnReset {
+      background: var(--btn-neutral);
+      color: #f8fafc;
+      box-shadow: 0 10px 18px rgba(71, 85, 105, 0.45);
+    }
+
+    #btnSubStep {
+      background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+      box-shadow: 0 10px 18px rgba(56, 189, 248, 0.35);
+    }
+
+    #btnStep {
+      background: linear-gradient(135deg, #22d3ee, #14b8a6);
+      box-shadow: 0 10px 18px rgba(20, 184, 166, 0.35);
+    }
+
+    #btnPause {
+      background: var(--btn-warn);
+    }
+
+    #btnStop {
+      background: var(--btn-danger);
+    }
+
+    .controls button:hover,
+    .top-controls button:hover { transform: translateY(-1px); filter: brightness(1.03); }
+    .controls button:active,
+    .top-controls button:active { transform: translateY(0); }
+
+    .controls button:focus-visible,
+    .top-controls button:focus-visible {
+      outline: 2px solid rgba(56, 189, 248, 0.9);
+      outline-offset: 2px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 8px;
+    }
+
+    .form-grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px 8px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .field.full { grid-column: 1 / -1; }
+
+    label {
+      display: flex;
+      align-items: center;
+      font-size: 10px;
+      color: var(--muted);
+      height: 22px;
+      white-space: nowrap;
+    }
+
+    input[type="number"],
+    input[type="text"] {
+      height: 32px;
+      padding: 0 8px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text);
+      font-size: 12px;
+      box-shadow: inset 0 1px 2px rgba(2, 6, 23, 0.35);
+    }
+
+    input[type="number"]:focus-visible,
+    input[type="text"]:focus-visible {
+      outline: 2px solid rgba(56, 189, 248, 0.7);
+      outline-offset: 1px;
+    }
+
+    .help {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .wheel-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    #wheel {
+      width: 340px;
+      height: 340px;
+      filter: drop-shadow(0 16px 26px rgba(2, 6, 23, 0.6));
+    }
+
+    .legend {
+      display: flex;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot.init { background: var(--accent-2); }
+    .dot.cancel { background: var(--danger); }
+    .dot.expired { background: var(--accent); }
+
+    .queue-list { display: grid; gap: 8px; }
+
+    .queue-item {
+      padding: 6px;
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid var(--border);
+      font-size: 11px;
+      font-family: var(--mono);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10px;
+      font-family: var(--mono);
+    }
+
+    th, td {
+      padding: 4px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+    }
+
+    th { color: var(--muted); }
+
+    table tr:nth-child(even) td {
+      background: rgba(15, 23, 42, 0.55);
+    }
+
+    .pill {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-left: 6px;
+    }
+
+    .pill.init { background: var(--accent-2); }
+    .pill.cancel { background: var(--danger); }
+    .pill.expired { background: var(--accent); }
+
+    .flow-steps {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 6px;
+    }
+
+    .flow-steps span {
+      font-size: 10px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.85);
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    .flow-steps span.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(34, 197, 94, 0.12);
+      box-shadow: 0 0 12px rgba(34, 197, 94, 0.35);
+    }
+
+    .log-panel {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .log {
+      flex: 1 1 auto;
+      min-height: 140px;
+      overflow-y: auto;
+      font-size: 11px;
+      line-height: 1.5;
+      background: rgba(15, 23, 42, 0.9);
+      border-radius: 8px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      font-family: var(--mono);
+    }
+
+    details {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.85);
+      padding: 6px;
+    }
+
+    details summary {
+      cursor: pointer;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    details summary:focus-visible {
+      outline: 2px solid rgba(56, 189, 248, 0.7);
+      outline-offset: 2px;
+    }
+
+    .role-grid {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    }
+
+    .role-card {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .role-card h3 {
+      margin: 0 0 4px 0;
+      font-size: 11px;
+      color: var(--text);
+    }
+
+    .footer {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    #wheel .time-dot {
+      filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.8));
+    }
+
+    #wheel .time-dot-pulse {
+      fill: rgba(56, 189, 248, 0.35);
+      transform-origin: center;
+      transform-box: fill-box;
+      animation: timePulse 1.8s ease-out infinite;
+    }
+
+    @keyframes timePulse {
+      0% { transform: scale(0.6); opacity: 0.7; }
+      70% { transform: scale(1.8); opacity: 0; }
+      100% { transform: scale(1.8); opacity: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+
+      #wheel .time-dot-pulse {
+        animation: none;
+        opacity: 0.2;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>HashedWheelTimer 全流程可视化动画</h1>
+    <div class="status" id="statusBar"></div>
+  </header>
+
+  <div class="container">
+    <section class="panel controls left-panel">
+      <h2>控制面板</h2>
+      <div class="group">
+        <div class="group-title">参数设置</div>
+        <div class="form-grid">
+          <div class="field">
+            <label>tickDuration (ms)</label>
+            <input type="number" id="tickDurationInput" value="1000" min="1" />
+          </div>
+          <div class="field">
+            <label>wheelSize (2 的幂)</label>
+            <input type="number" id="wheelSizeInput" value="16" min="2" />
+          </div>
+          <div class="field full">
+            <label>maxPendingTimeouts</label>
+            <input type="number" id="maxPendingInput" value="-1" />
+          </div>
+          <div class="field full">
+            <div class="help">tick 推进速度由 tickDuration 决定, 不单独配置</div>
+          </div>
+          <div class="field full">
+            <button id="btnApply" class="secondary">应用参数</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-title">任务编辑</div>
+        <div class="form-grid">
+          <div class="field">
+            <label>delay (ms)</label>
+            <input type="number" id="addDelay" value="5000" min="0" />
+          </div>
+          <div class="field">
+            <label>绝对 deadline (ms)</label>
+            <input type="number" id="addDeadline" placeholder="留空表示相对当前时间" />
+          </div>
+          <div class="field full">
+            <label>任务备注</label>
+            <input type="text" id="addLabel" placeholder="可选" />
+          </div>
+          <div class="field full">
+            <button id="btnAddTask" class="secondary">添加任务</button>
+          </div>
+          <div class="field full">
+            <label>取消任务 ID</label>
+            <input type="number" id="cancelId" />
+          </div>
+          <div class="field full">
+            <button id="btnCancel" class="warn">取消任务</button>
+          </div>
+          <div class="field full">
+            <label>批量数量</label>
+            <input type="number" id="bulkCount" value="5" min="1" />
+          </div>
+          <div class="field">
+            <label>最小 delay (ms)</label>
+            <input type="number" id="bulkMin" value="2000" min="0" />
+          </div>
+          <div class="field">
+            <label>最大 delay (ms)</label>
+            <input type="number" id="bulkMax" value="12000" min="0" />
+          </div>
+          <div class="field full">
+            <button id="btnBulk" class="secondary">批量创建</button>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <section class="panel top-controls">
+      <h2>状态与播放控制</h2>
+      <div class="three-col">
+        <div class="group col" style="margin-bottom: 0;">
+          <div class="group-title">状态控制</div>
+          <div class="button-row">
+            <button id="btnReset" class="danger">重置</button>
+            <button id="btnStart">启动</button>
+            <button id="btnStop" class="danger">停止</button>
+          </div>
+        </div>
+        <div class="group col" style="margin-bottom: 0;">
+          <div class="group-title">播放控制</div>
+          <div class="button-row">
+            <button id="btnPlay" class="secondary">播放</button>
+            <button id="btnPause" class="warn">暂停</button>
+            <button id="btnSubStep">单步</button>
+            <button id="btnStep">周期单步</button>
+          </div>
+        </div>
+        <div class="group col" style="margin-bottom: 0;">
+          <div class="group-title">预置场景</div>
+          <div class="button-row">
+            <button id="sceneNormal">正常过期</button>
+            <button id="sceneCancel" class="warn">取消任务</button>
+            <button id="sceneStop" class="danger">stop 后未处理</button>
+            <button id="sceneReject" class="danger">maxPendingTimeouts 拒绝</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel wheel-panel">
+      <h2>时间轮与任务分布</h2>
+      <svg id="wheel" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="legend">
+        <span><i class="dot init"></i> INIT</span>
+        <span><i class="dot cancel"></i> CANCELLED</span>
+        <span><i class="dot expired"></i> EXPIRED</span>
+      </div>
+      <div class="help">当前 tick 高亮显示, 任务节点沿轮盘分布</div>
+    </section>
+
+    <section class="panel right-panel">
+      <h2>队列与任务表</h2>
+      <div class="queue-list">
+        <div>
+          <div class="help">timeouts 队列</div>
+          <div id="timeoutsList"></div>
+        </div>
+        <div>
+          <div class="help">cancelledTimeouts 队列</div>
+          <div id="cancelledList"></div>
+        </div>
+      </div>
+
+      <div class="help" style="margin-top: 6px;">任务表</div>
+      <div style="max-height: 150px; overflow-y: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>deadline</th>
+              <th>rounds</th>
+              <th>bucket</th>
+              <th>state</th>
+            </tr>
+          </thead>
+          <tbody id="taskTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel log-panel">
+      <h2>流程高亮与事件日志</h2>
+      <div class="flow-steps" id="flowSteps"></div>
+      <div class="log" id="log"></div>
+    </section>
+
+    <section class="panel consensus-panel">
+      <h2>设计讨论与共识</h2>
+      <details>
+        <summary>7 角色共识</summary>
+        <div class="role-grid">
+          <div class="role-card">
+            <h3>角色一 总设计者</h3>
+            <ul>
+              <li>流程拆分与源码一致, tick 内步骤明确</li>
+              <li>场景编辑覆盖创建、取消、停止与拒绝边界</li>
+              <li>数据结构与状态在表格中可视化</li>
+            </ul>
+          </div>
+          <div class="role-card">
+            <h3>角色二 Java 初学者</h3>
+            <ul>
+              <li>操作分组清晰, 可以按步骤学习</li>
+              <li>日志解释每一步原因, 学习门槛低</li>
+              <li>输入项对齐统一, 不易误操作</li>
+            </ul>
+          </div>
+          <div class="role-card">
+            <h3>角色三 谷歌 Java 技术专家</h3>
+            <ul>
+              <li>mask 与 remainingRounds 计算一致</li>
+              <li>取消与清理顺序符合源码语义</li>
+              <li>pendingTimeouts 与状态转换展示准确</li>
+            </ul>
+          </div>
+          <div class="role-card">
+            <h3>角色四 普林斯顿大学计算机 Java 老师</h3>
+            <ul>
+              <li>结构层次分明, 便于课堂讲解</li>
+              <li>颜色与图形映射状态, 直观易懂</li>
+              <li>一屏呈现核心信息, 学习集中</li>
+            </ul>
+          </div>
+          <div class="role-card">
+            <h3>前端大师</h3>
+            <ul>
+              <li>纯 HTML/CSS/JS 实现, 无依赖负担</li>
+              <li>布局对齐规则统一, 组件复用一致</li>
+              <li>响应式约束保证 macOS 14 寸适配</li>
+            </ul>
+          </div>
+          <div class="role-card">
+            <h3>计算机图形学大师</h3>
+            <ul>
+              <li>角度与半径映射体现桶分布</li>
+              <li>高亮与颜色保持状态语义一致</li>
+              <li>简洁视觉避免干扰核心理解</li>
+            </ul>
+          </div>
+          <div class="role-card">
+            <h3>苹果首席 UI 设计大师</h3>
+            <ul>
+              <li>极简风格与轻量玻璃质感提升专注</li>
+              <li>主操作与风险操作颜色明显区分</li>
+              <li>层级清晰、留白克制、信息密度可控</li>
+            </ul>
+          </div>
+        </div>
+      </details>
+    </section>
+  </div>
+
+  <script>
+    const STATUS = { INIT: 'INIT', STARTED: 'STARTED', SHUTDOWN: 'SHUTDOWN' };
+    const TASK_STATE = { INIT: 'INIT', CANCELLED: 'CANCELLED', EXPIRED: 'EXPIRED' };
+
+    const flowOrder = [
+      'waitForNextTick',
+      'processCancelledTasks',
+      'transferTimeoutsToBuckets',
+      'expireTimeouts',
+      'taskExecutor'
+    ];
+
+    /** @type {Array<string | string[]>} */
+    const stepQueue = [];
+
+    const WHEEL_CENTER_X = 200;
+    const WHEEL_CENTER_Y = 200;
+    const WHEEL_RADIUS = 140;
+    const TICK_RADIUS = 160;
+    const TIME_DOT_RADIUS = 152;
+
+    const state = {
+      workerState: STATUS.INIT,
+      tick: 0,
+      tickDuration: 1000,
+      wheelSize: 16,
+      mask: 15,
+      maxPendingTimeouts: -1,
+      pendingTimeouts: 0,
+      running: false,
+      timeoutsQueue: [],
+      cancelledQueue: [],
+      wheel: [],
+      tasks: new Map(),
+      taskId: 1,
+      log: [],
+      currentTime: 0,
+      lastTickAt: null,
+      manualAnimating: false,
+      manualProgress: 0,
+      manualStepping: false,
+      frozenProgress: 0,
+      stopAfterTick: false,
+      activeStep: '',
+      activeSteps: new Set(),
+      expireTriggersExecutor: false,
+      stepQueue,
+      stepAnimating: false,
+      stepPhase: 0,
+      animationPaused: false,
+      manualStep: false
+    };
+
+    const ui = {
+      statusBar: document.getElementById('statusBar'),
+      tickDurationInput: document.getElementById('tickDurationInput'),
+      wheelSizeInput: document.getElementById('wheelSizeInput'),
+      maxPendingInput: document.getElementById('maxPendingInput'),
+      timeoutsList: document.getElementById('timeoutsList'),
+      cancelledList: document.getElementById('cancelledList'),
+      taskTable: document.getElementById('taskTable'),
+      wheelSvg: document.getElementById('wheel'),
+      flowSteps: document.getElementById('flowSteps'),
+      log: document.getElementById('log'),
+      timeDot: null,
+      timeDotPulse: null
+    };
+
+    function log(message) {
+      const time = new Date().toLocaleTimeString();
+      state.log.push(`[${time}] ${message}`);
+      if (state.log.length > 120) state.log.shift();
+      ui.log.innerHTML = state.log.map(line => `<div>${line}</div>`).join('');
+      ui.log.scrollTop = ui.log.scrollHeight;
+    }
+
+    function clearLog() {
+      state.log = [];
+      ui.log.innerHTML = '';
+      ui.log.scrollTop = 0;
+    }
+
+    function flashDuration() {
+      return Math.min(200, Math.max(90, Math.floor(state.tickDuration * 0.4)));
+    }
+
+    function polarToCartesian(cx, cy, r, angle) {
+      return {
+        x: cx + r * Math.cos(angle),
+        y: cy + r * Math.sin(angle)
+      };
+    }
+
+    function describeArcSegment(cx, cy, innerR, outerR, startAngle, endAngle) {
+      const largeArc = endAngle - startAngle <= Math.PI ? 0 : 1;
+      const startOuter = polarToCartesian(cx, cy, outerR, endAngle);
+      const endOuter = polarToCartesian(cx, cy, outerR, startAngle);
+      const startInner = polarToCartesian(cx, cy, innerR, startAngle);
+      const endInner = polarToCartesian(cx, cy, innerR, endAngle);
+      return [
+        'M', startOuter.x, startOuter.y,
+        'A', outerR, outerR, 0, largeArc, 0, endOuter.x, endOuter.y,
+        'L', startInner.x, startInner.y,
+        'A', innerR, innerR, 0, largeArc, 1, endInner.x, endInner.y,
+        'Z'
+      ].join(' ');
+    }
+
+    function getTickProgress(now) {
+      if (state.manualAnimating) return state.manualProgress;
+      if (!state.running || state.lastTickAt == null || state.tickDuration <= 0) {
+        return Math.min(1, Math.max(0, state.frozenProgress || 0));
+      }
+      const elapsed = now - state.lastTickAt;
+      return Math.min(1, Math.max(0, elapsed / state.tickDuration));
+    }
+
+    function positionTimeDot(progress) {
+      const dot = ui.timeDot || document.getElementById('timeDot');
+      const pulse = ui.timeDotPulse || document.getElementById('timeDotPulse');
+      if (!dot) return;
+      const visualTick = state.tick + (progress || 0);
+      const angle = (visualTick / state.wheelSize) * Math.PI * 2 - Math.PI / 2;
+      const x = WHEEL_CENTER_X + Math.cos(angle) * TIME_DOT_RADIUS;
+      const y = WHEEL_CENTER_Y + Math.sin(angle) * TIME_DOT_RADIUS;
+      dot.setAttribute('cx', x);
+      dot.setAttribute('cy', y);
+      if (pulse) {
+        pulse.setAttribute('cx', x);
+        pulse.setAttribute('cy', y);
+      }
+    }
+
+    let timeIndicatorHandle = null;
+    function startTimeIndicator() {
+      if (timeIndicatorHandle) return;
+      const loop = () => {
+        positionTimeDot(getTickProgress(performance.now()));
+        timeIndicatorHandle = requestAnimationFrame(loop);
+      };
+      timeIndicatorHandle = requestAnimationFrame(loop);
+    }
+
+    function waitForStepQueueIdle({ stopWhen } = {}) {
+      return new Promise(resolve => {
+        const check = () => {
+          if (stopWhen && stopWhen()) {
+            resolve();
+            return;
+          }
+          if (!state.stepQueue.length && !state.stepAnimating) {
+            resolve();
+          } else {
+            requestAnimationFrame(check);
+          }
+        };
+        check();
+      });
+    }
+
+    function animateManualTick(duration, startProgress = 0) {
+      return new Promise(resolve => {
+        state.manualAnimating = true;
+        if (duration <= 0) {
+          state.manualProgress = 1;
+          positionTimeDot(1);
+          resolve();
+          return;
+        }
+        const start = performance.now();
+        const span = Math.max(0, 1 - startProgress);
+        const step = now => {
+          const progress = Math.min(1, Math.max(0, (now - start) / duration));
+          const blended = startProgress + progress * span;
+          state.manualProgress = blended;
+          positionTimeDot(blended);
+          if (progress < 1) {
+            requestAnimationFrame(step);
+            return;
+          }
+          resolve();
+        };
+        requestAnimationFrame(step);
+      });
+    }
+
+    function enqueueStep(step) {
+      state.stepQueue.push(step);
+      if (!state.stepAnimating) runStepQueue();
+    }
+
+    function setActiveSteps(steps) {
+      state.activeStep = '';
+      state.activeSteps = new Set(steps);
+      renderFlowSteps();
+    }
+
+    function runStepQueue() {
+      if (state.animationPaused) {
+        state.stepAnimating = false;
+        state.activeStep = '';
+        state.activeSteps = new Set();
+        state.expireTriggersExecutor = false;
+        renderFlowSteps();
+        return;
+      }
+      if (!state.stepQueue.length) {
+        state.stepAnimating = false;
+        state.activeStep = '';
+        state.activeSteps = new Set();
+        state.expireTriggersExecutor = false;
+        renderFlowSteps();
+        if (state.manualStep) {
+          state.animationPaused = true;
+          state.manualStep = false;
+        }
+        return;
+      }
+      state.stepAnimating = true;
+      const step = state.stepQueue.shift();
+      const resolvedStep = (step === 'expireTimeouts' && state.expireTriggersExecutor)
+        ? ['expireTimeouts', 'taskExecutor']
+        : step;
+      const shouldClearExpireFlag = Array.isArray(resolvedStep)
+        ? resolvedStep.includes('expireTimeouts')
+        : resolvedStep === 'expireTimeouts';
+      if (Array.isArray(resolvedStep)) {
+        setActiveSteps(resolvedStep);
+        setTimeout(() => {
+          state.activeSteps = new Set();
+          if (shouldClearExpireFlag) state.expireTriggersExecutor = false;
+          renderFlowSteps();
+          setTimeout(runStepQueue, 40);
+        }, flashDuration());
+      } else {
+        state.activeSteps = new Set();
+        state.activeStep = resolvedStep;
+        renderFlowSteps();
+        setTimeout(() => {
+          state.activeStep = '';
+          if (shouldClearExpireFlag) state.expireTriggersExecutor = false;
+          renderFlowSteps();
+          setTimeout(runStepQueue, 40);
+        }, flashDuration());
+      }
+    }
+
+    function normalizeWheelSize(n) {
+      let size = 1;
+      while (size < n) size <<= 1;
+      return Math.max(2, size);
+    }
+
+    function initWheel() {
+      state.wheel = Array.from({ length: state.wheelSize }, () => []);
+      state.mask = state.wheelSize - 1;
+    }
+
+    function resetState() {
+      state.workerState = STATUS.INIT;
+      state.tick = 0;
+      state.currentTime = 0;
+      state.lastTickAt = performance.now();
+      state.manualAnimating = false;
+      state.manualProgress = 0;
+      state.manualStepping = false;
+      state.frozenProgress = 0;
+      state.stopAfterTick = false;
+      state.timeoutsQueue = [];
+      state.cancelledQueue = [];
+      state.tasks = new Map();
+      state.pendingTimeouts = 0;
+      state.taskId = 1;
+      state.running = false;
+      state.activeStep = '';
+      state.activeSteps = new Set();
+      state.expireTriggersExecutor = false;
+      state.stepPhase = 0;
+      state.animationPaused = false;
+      state.manualStep = false;
+      initWheel();
+      clearLog();
+      render();
+    }
+
+    function startWorker() {
+      if (state.workerState === STATUS.SHUTDOWN) {
+        log('已停止状态, 无法再次启动');
+        return;
+      }
+      state.workerState = STATUS.STARTED;
+      log('Worker 启动');
+      render();
+    }
+
+    function stopWorker() {
+      state.workerState = STATUS.SHUTDOWN;
+      state.running = false;
+      state.animationPaused = true;
+      state.manualStep = false;
+      log('Worker 停止, 未处理任务已保留');
+      render();
+    }
+
+    function addTimeout({ delay, label, deadline }) {
+      if (state.maxPendingTimeouts > 0 && state.pendingTimeouts + 1 > state.maxPendingTimeouts) {
+        log(`拒绝创建任务, pendingTimeouts 超过限制 ${state.maxPendingTimeouts}`);
+        return null;
+      }
+      if (state.workerState === STATUS.SHUTDOWN) {
+        log('已停止状态, 无法创建任务');
+        return null;
+      }
+      const id = state.taskId++;
+      const now = state.currentTime;
+      const deadlineTime = deadline != null ? deadline : now + delay;
+      const timeout = {
+        id,
+        delay,
+        deadline: deadlineTime,
+        remainingRounds: 0,
+        state: TASK_STATE.INIT,
+        bucketIndex: null,
+        taskLabel: label || `task-${id}`,
+        createdTick: state.tick
+      };
+      state.timeoutsQueue.push(timeout);
+      state.tasks.set(id, timeout);
+      state.pendingTimeouts++;
+      log(`newTimeout -> id ${id}, deadline ${deadlineTime}ms`);
+      render();
+      return timeout;
+    }
+
+    function cancelTimeout(id) {
+      const timeout = state.tasks.get(id);
+      if (!timeout) {
+        log(`取消失败, 未找到任务 ${id}`);
+        return;
+      }
+      if (timeout.state !== TASK_STATE.INIT) {
+        log(`取消失败, 任务 ${id} 已处于 ${timeout.state}`);
+        return;
+      }
+      timeout.state = TASK_STATE.CANCELLED;
+      state.cancelledQueue.push(timeout);
+      log(`cancel -> id ${id} 放入 cancelledTimeouts`);
+      render();
+    }
+
+    function processCancelledTasks() {
+      enqueueStep('processCancelledTasks');
+      let processed = 0;
+      while (state.cancelledQueue.length) {
+        const timeout = state.cancelledQueue.shift();
+        removeFromBucket(timeout);
+        if (timeout.state === TASK_STATE.CANCELLED) {
+          state.pendingTimeouts = Math.max(0, state.pendingTimeouts - 1);
+          processed++;
+        }
+      }
+      if (processed) log(`processCancelledTasks -> 清理 ${processed} 个任务`);
+    }
+
+    function transferTimeoutsToBuckets() {
+      enqueueStep('transferTimeoutsToBuckets');
+      const limit = 100000;
+      let moved = 0;
+      while (state.timeoutsQueue.length && moved < limit) {
+        const timeout = state.timeoutsQueue.shift();
+        if (timeout.state === TASK_STATE.CANCELLED) continue;
+        const calculated = Math.floor(timeout.deadline / state.tickDuration);
+        timeout.remainingRounds = Math.floor((calculated - state.tick) / state.wheelSize);
+        const ticks = Math.max(calculated, state.tick);
+        const stopIndex = ticks & state.mask;
+        timeout.bucketIndex = stopIndex;
+        state.wheel[stopIndex].push(timeout);
+        moved++;
+      }
+      if (moved) log(`transferTimeoutsToBuckets -> 转移 ${moved} 个任务`);
+    }
+
+    function expireTimeouts() {
+      const index = state.tick & state.mask;
+      const bucket = state.wheel[index];
+      if (!bucket.length) {
+        state.expireTriggersExecutor = false;
+        enqueueStep('expireTimeouts');
+        return;
+      }
+
+      let expiredCount = 0;
+      for (let i = bucket.length - 1; i >= 0; i--) {
+        const timeout = bucket[i];
+        if (timeout.state === TASK_STATE.CANCELLED) {
+          bucket.splice(i, 1);
+          continue;
+        }
+        if (timeout.remainingRounds <= 0) {
+          if (timeout.deadline <= state.currentTime) {
+            timeout.state = TASK_STATE.EXPIRED;
+            bucket.splice(i, 1);
+            state.pendingTimeouts = Math.max(0, state.pendingTimeouts - 1);
+            expiredCount++;
+            log(`expireTimeouts -> 执行任务 ${timeout.id}`);
+          } else {
+            log(`错误: timeout.deadline ${timeout.deadline} > deadline ${state.currentTime}`);
+          }
+        } else if (timeout.state === TASK_STATE.INIT) {
+          timeout.remainingRounds--;
+        }
+      }
+      state.expireTriggersExecutor = expiredCount > 0;
+      enqueueStep('expireTimeouts');
+      if (expiredCount) log(`expireTimeouts -> 过期 ${expiredCount} 个任务`);
+    }
+
+    function removeFromBucket(timeout) {
+      if (timeout.bucketIndex == null) return;
+      const bucket = state.wheel[timeout.bucketIndex];
+      const idx = bucket.findIndex(t => t.id === timeout.id);
+      if (idx >= 0) bucket.splice(idx, 1);
+    }
+
+    function stepTickCore({ includeWaitHighlight = true, advanceTick = true } = {}) {
+      if (state.workerState !== STATUS.STARTED) {
+        log('Worker 未启动, 无法推进 tick');
+        return false;
+      }
+      if (includeWaitHighlight) enqueueStep('waitForNextTick');
+      state.currentTime = state.tickDuration * (state.tick + 1);
+      processCancelledTasks();
+      transferTimeoutsToBuckets();
+      expireTimeouts();
+      if (advanceTick) {
+        state.tick++;
+        state.lastTickAt = performance.now();
+      }
+      state.stepPhase = 0;
+      render();
+      return true;
+    }
+
+    function stepTick() {
+      stepTickCore();
+    }
+
+    async function stepTickSubStep() {
+      if (state.workerState !== STATUS.STARTED) {
+        log('Worker 未启动, 无法推进 tick');
+        return;
+      }
+      if (state.running) {
+        state.stopAfterTick = true;
+        return;
+      }
+      if (state.manualStepping) return;
+      state.manualStepping = true;
+      state.manualStep = false;
+      state.animationPaused = false;
+
+      switch (state.stepPhase) {
+        case 0: {
+          const startProgress = Math.min(1, Math.max(0, state.frozenProgress || 0));
+          state.frozenProgress = 0;
+          state.manualProgress = startProgress;
+          state.manualAnimating = true;
+          positionTimeDot(startProgress);
+          state.activeStep = '';
+          state.activeSteps = new Set(['waitForNextTick']);
+          renderFlowSteps();
+          const remainingDuration = Math.max(0, (1 - startProgress) * state.tickDuration);
+          await animateManualTick(remainingDuration, startProgress);
+          state.activeSteps = new Set();
+          state.activeStep = '';
+          renderFlowSteps();
+          state.manualAnimating = false;
+          state.manualProgress = 0;
+          state.frozenProgress = 1;
+          state.currentTime = state.tickDuration * (state.tick + 1);
+          break;
+        }
+        case 1:
+          processCancelledTasks();
+          await waitForStepQueueIdle();
+          break;
+        case 2:
+          transferTimeoutsToBuckets();
+          await waitForStepQueueIdle();
+          break;
+        case 3:
+          expireTimeouts();
+          await waitForStepQueueIdle();
+          break;
+        case 4:
+          state.tick++;
+          state.lastTickAt = performance.now();
+          state.frozenProgress = 0;
+          log(`tick++ -> ${state.tick}`);
+          break;
+        default:
+          state.stepPhase = 0;
+          break;
+      }
+
+      state.stepPhase = (state.stepPhase + 1) % 5;
+      state.manualStepping = false;
+      render();
+    }
+
+    async function stepTickPhased() {
+      if (state.workerState !== STATUS.STARTED) {
+        log('Worker 未启动, 无法推进 tick');
+        return;
+      }
+      if (state.running) {
+        state.stopAfterTick = true;
+        return;
+      }
+      if (state.manualStepping) return;
+      state.manualStepping = true;
+      state.manualStep = false;
+      state.animationPaused = false;
+      const startProgress = Math.min(1, Math.max(0, state.frozenProgress || 0));
+      state.frozenProgress = 0;
+      state.manualProgress = startProgress;
+      state.manualAnimating = true;
+      positionTimeDot(startProgress);
+      state.activeStep = '';
+      state.activeSteps = new Set(['waitForNextTick']);
+      renderFlowSteps();
+      const remainingDuration = Math.max(0, (1 - startProgress) * state.tickDuration);
+      await animateManualTick(remainingDuration, startProgress);
+      state.activeSteps = new Set();
+      state.activeStep = '';
+      renderFlowSteps();
+      state.manualProgress = 1;
+      state.manualAnimating = true;
+      state.currentTime = state.tickDuration * (state.tick + 1);
+      processCancelledTasks();
+      transferTimeoutsToBuckets();
+      expireTimeouts();
+      await waitForStepQueueIdle();
+      state.tick++;
+      state.lastTickAt = performance.now();
+      log(`tick++ -> ${state.tick}`);
+      state.manualAnimating = false;
+      state.manualProgress = 0;
+      state.manualStepping = false;
+      state.stepPhase = 0;
+      render();
+    }
+
+    let playHandle = null;
+    let playToken = 0;
+    function play() {
+      if (state.workerState !== STATUS.STARTED) startWorker();
+      if (state.running) return;
+      state.running = true;
+      state.animationPaused = false;
+      state.manualStep = false;
+      let resumeProgress = Math.min(1, Math.max(0, state.frozenProgress || 0));
+      state.frozenProgress = 0;
+      playToken += 1;
+      const token = playToken;
+      const loop = async () => {
+        while (state.running && token === playToken) {
+          state.manualAnimating = false;
+          state.manualProgress = 0;
+          state.activeStep = '';
+          state.activeSteps = new Set(['waitForNextTick']);
+          renderFlowSteps();
+          const now = performance.now();
+          state.lastTickAt = now - resumeProgress * state.tickDuration;
+          resumeProgress = 0;
+          await new Promise(resolve => {
+            const remaining = Math.max(0, state.tickDuration - (performance.now() - state.lastTickAt));
+            playHandle = setTimeout(resolve, remaining);
+          });
+          if (!state.running || token !== playToken) return;
+          state.activeSteps = new Set();
+          state.activeStep = '';
+          renderFlowSteps();
+          state.manualAnimating = true;
+          state.manualProgress = 1;
+          stepTickCore({ includeWaitHighlight: false, advanceTick: false });
+          await waitForStepQueueIdle({ stopWhen: () => !state.running || token !== playToken });
+          if (!state.running || token !== playToken) {
+            state.manualAnimating = false;
+            state.manualProgress = 0;
+            return;
+          }
+          state.manualAnimating = false;
+          state.manualProgress = 0;
+          state.tick++;
+          state.lastTickAt = performance.now();
+          state.stepPhase = 0;
+          render();
+          if (state.stopAfterTick) {
+            state.stopAfterTick = false;
+            pause({ immediate: true });
+            return;
+          }
+        }
+      };
+      loop();
+    }
+
+    function pause({ immediate = false } = {}) {
+      if (state.running && !immediate) {
+        state.stopAfterTick = true;
+        return;
+      }
+      if (state.running && state.lastTickAt != null && state.tickDuration > 0) {
+        const progress = (performance.now() - state.lastTickAt) / state.tickDuration;
+        state.frozenProgress = Math.min(1, Math.max(0, progress));
+      }
+      state.running = false;
+      state.animationPaused = true;
+      state.manualStep = false;
+      state.activeSteps = new Set();
+      state.activeStep = '';
+      state.manualAnimating = false;
+      state.manualProgress = 0;
+      playToken += 1;
+      if (playHandle) clearTimeout(playHandle);
+      render();
+    }
+
+    function renderStatus() {
+      const elements = [
+        `状态: ${state.workerState}`,
+        `tick: ${state.tick}`,
+        `pendingTimeouts: ${state.pendingTimeouts}`,
+        `tickDuration: ${state.tickDuration}ms`,
+        `wheelSize: ${state.wheelSize}`
+      ];
+      ui.statusBar.innerHTML = elements.map(text => `<span>${text}</span>`).join('');
+    }
+
+    function renderQueues() {
+      ui.timeoutsList.innerHTML = state.timeoutsQueue
+        .map(t => `<div class="queue-item">#${t.id} ${t.taskLabel} (deadline ${t.deadline})</div>`)
+        .join('') || '<div class="queue-item">空</div>';
+
+      ui.cancelledList.innerHTML = state.cancelledQueue
+        .map(t => `<div class="queue-item">#${t.id} ${t.taskLabel}</div>`)
+        .join('') || '<div class="queue-item">空</div>';
+    }
+
+    function renderTasks() {
+      const rows = Array.from(state.tasks.values())
+        .sort((a, b) => a.id - b.id)
+        .map(t => {
+          const pillClass = t.state === TASK_STATE.INIT ? 'init' : t.state === TASK_STATE.CANCELLED ? 'cancel' : 'expired';
+          return `<tr>
+            <td>${t.id}</td>
+            <td>${t.deadline}</td>
+            <td>${t.remainingRounds}</td>
+            <td>${t.bucketIndex == null ? '-' : t.bucketIndex}</td>
+            <td>${t.state}<span class="pill ${pillClass}"></span></td>
+          </tr>`;
+        });
+      ui.taskTable.innerHTML = rows.join('');
+    }
+
+    function renderFlowSteps() {
+      const expireActive = state.activeStep === 'expireTimeouts' || state.activeSteps.has('expireTimeouts');
+      ui.flowSteps.innerHTML = flowOrder
+        .map(step => {
+          const isActive = state.activeStep === step || state.activeSteps.has(step) || (step === 'taskExecutor' && expireActive);
+          return `<span class="${isActive ? 'active' : ''}">${step}</span>`;
+        })
+        .join('');
+    }
+
+    function drawWheel() {
+      const svg = ui.wheelSvg;
+      svg.innerHTML = '';
+      const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+
+      const glow = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
+      glow.setAttribute('id', 'wheelGlow');
+      glow.setAttribute('filterUnits', 'userSpaceOnUse');
+      glow.setAttribute('x', '-40');
+      glow.setAttribute('y', '-40');
+      glow.setAttribute('width', '480');
+      glow.setAttribute('height', '480');
+      const blur = document.createElementNS('http://www.w3.org/2000/svg', 'feGaussianBlur');
+      blur.setAttribute('stdDeviation', '3');
+      blur.setAttribute('result', 'coloredBlur');
+      const merge = document.createElementNS('http://www.w3.org/2000/svg', 'feMerge');
+      const mergeNode1 = document.createElementNS('http://www.w3.org/2000/svg', 'feMergeNode');
+      mergeNode1.setAttribute('in', 'coloredBlur');
+      const mergeNode2 = document.createElementNS('http://www.w3.org/2000/svg', 'feMergeNode');
+      mergeNode2.setAttribute('in', 'SourceGraphic');
+      merge.appendChild(mergeNode1);
+      merge.appendChild(mergeNode2);
+      glow.appendChild(blur);
+      glow.appendChild(merge);
+      defs.appendChild(glow);
+
+      const strokeGradient = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+      strokeGradient.setAttribute('id', 'wheelStroke');
+      strokeGradient.setAttribute('x1', '0%');
+      strokeGradient.setAttribute('y1', '0%');
+      strokeGradient.setAttribute('x2', '100%');
+      strokeGradient.setAttribute('y2', '100%');
+      const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+      stop1.setAttribute('offset', '0%');
+      stop1.setAttribute('stop-color', '#38bdf8');
+      stop1.setAttribute('stop-opacity', '0.55');
+      const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+      stop2.setAttribute('offset', '100%');
+      stop2.setAttribute('stop-color', '#22c55e');
+      stop2.setAttribute('stop-opacity', '0.65');
+      strokeGradient.appendChild(stop1);
+      strokeGradient.appendChild(stop2);
+      defs.appendChild(strokeGradient);
+
+      const fillGradient = document.createElementNS('http://www.w3.org/2000/svg', 'radialGradient');
+      fillGradient.setAttribute('id', 'wheelFill');
+      fillGradient.setAttribute('cx', '50%');
+      fillGradient.setAttribute('cy', '50%');
+      fillGradient.setAttribute('r', '55%');
+      const fillStop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+      fillStop1.setAttribute('offset', '0%');
+      fillStop1.setAttribute('stop-color', '#38bdf8');
+      fillStop1.setAttribute('stop-opacity', '0.08');
+      const fillStop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+      fillStop2.setAttribute('offset', '100%');
+      fillStop2.setAttribute('stop-color', '#0b1220');
+      fillStop2.setAttribute('stop-opacity', '0');
+      fillGradient.appendChild(fillStop1);
+      fillGradient.appendChild(fillStop2);
+      defs.appendChild(fillGradient);
+
+      svg.appendChild(defs);
+
+      const glowRing = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      glowRing.setAttribute('cx', WHEEL_CENTER_X);
+      glowRing.setAttribute('cy', WHEEL_CENTER_Y);
+      glowRing.setAttribute('r', WHEEL_RADIUS + 12);
+      glowRing.setAttribute('fill', 'url(#wheelFill)');
+      svg.appendChild(glowRing);
+
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('cx', WHEEL_CENTER_X);
+      circle.setAttribute('cy', WHEEL_CENTER_Y);
+      circle.setAttribute('r', WHEEL_RADIUS);
+      circle.setAttribute('fill', 'none');
+      circle.setAttribute('stroke', 'url(#wheelStroke)');
+      circle.setAttribute('stroke-width', '2');
+      svg.appendChild(circle);
+
+      for (let i = 0; i < state.wheelSize; i++) {
+        const angle = (i / state.wheelSize) * Math.PI * 2 - Math.PI / 2;
+        const x1 = WHEEL_CENTER_X + Math.cos(angle) * WHEEL_RADIUS;
+        const y1 = WHEEL_CENTER_Y + Math.sin(angle) * WHEEL_RADIUS;
+        const x2 = WHEEL_CENTER_X + Math.cos(angle) * TICK_RADIUS;
+        const y2 = WHEEL_CENTER_Y + Math.sin(angle) * TICK_RADIUS;
+
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        const isActive = i === (state.tick & state.mask);
+        line.setAttribute('stroke', isActive ? '#7dd3fc' : 'rgba(148, 163, 184, 0.35)');
+        line.setAttribute('stroke-width', i === (state.tick & state.mask) ? '3.6' : '1.4');
+        line.setAttribute('stroke-linecap', 'round');
+        svg.appendChild(line);
+
+        if (state.wheelSize <= 32 || i % 4 === 0) {
+          const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          const lx = WHEEL_CENTER_X + Math.cos(angle) * (TICK_RADIUS + 10);
+          const ly = WHEEL_CENTER_Y + Math.sin(angle) * (TICK_RADIUS + 10);
+          label.setAttribute('x', lx);
+          label.setAttribute('y', ly);
+          label.setAttribute('fill', '#94a3b8');
+          label.setAttribute('font-size', '10');
+          label.setAttribute('text-anchor', 'middle');
+          label.textContent = i;
+          svg.appendChild(label);
+        }
+      }
+
+      const timeDotPulse = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      timeDotPulse.setAttribute('id', 'timeDotPulse');
+      timeDotPulse.setAttribute('r', '7');
+      timeDotPulse.setAttribute('class', 'time-dot-pulse');
+      svg.appendChild(timeDotPulse);
+      ui.timeDotPulse = timeDotPulse;
+
+      const timeDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      timeDot.setAttribute('id', 'timeDot');
+      timeDot.setAttribute('r', '5');
+      timeDot.setAttribute('fill', '#38bdf8');
+      timeDot.setAttribute('stroke', '#0b1220');
+      timeDot.setAttribute('stroke-width', '2');
+      timeDot.setAttribute('class', 'time-dot');
+      svg.appendChild(timeDot);
+      ui.timeDot = timeDot;
+      positionTimeDot(getTickProgress(performance.now()));
+
+      for (let i = 0; i < state.wheelSize; i++) {
+        const bucket = state.wheel[i];
+        bucket.forEach((task, idx) => {
+          const angle = (i / state.wheelSize) * Math.PI * 2 - Math.PI / 2;
+          const taskRadius = WHEEL_RADIUS - 10 - idx * 9;
+          const x = WHEEL_CENTER_X + Math.cos(angle) * taskRadius;
+          const y = WHEEL_CENTER_Y + Math.sin(angle) * taskRadius;
+          const node = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          node.setAttribute('cx', x);
+          node.setAttribute('cy', y);
+          node.setAttribute('r', 5);
+          const color = task.state === TASK_STATE.CANCELLED ? '#ef4444' : task.state === TASK_STATE.EXPIRED ? '#22c55e' : '#38bdf8';
+          node.setAttribute('fill', color);
+          node.setAttribute('stroke', '#0b1220');
+          node.setAttribute('stroke-width', '1');
+          node.addEventListener('mouseenter', () => {
+            log(`任务 ${task.id} | state ${task.state} | deadline ${task.deadline} | rounds ${task.remainingRounds}`);
+          });
+          svg.appendChild(node);
+        });
+      }
+
+      const activeIndex = state.tick & state.mask;
+      const pointerAngle = (activeIndex / state.wheelSize) * Math.PI * 2 - Math.PI / 2;
+      const pointerOuter = WHEEL_RADIUS + 20;
+      const pointerInner = WHEEL_RADIUS + 4;
+      const px1 = WHEEL_CENTER_X + Math.cos(pointerAngle) * pointerInner;
+      const py1 = WHEEL_CENTER_Y + Math.sin(pointerAngle) * pointerInner;
+      const px2 = WHEEL_CENTER_X + Math.cos(pointerAngle) * pointerOuter;
+      const py2 = WHEEL_CENTER_Y + Math.sin(pointerAngle) * pointerOuter;
+      const pointerLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      pointerLine.setAttribute('x1', px1);
+      pointerLine.setAttribute('y1', py1);
+      pointerLine.setAttribute('x2', px2);
+      pointerLine.setAttribute('y2', py2);
+      pointerLine.setAttribute('stroke', '#7dd3fc');
+      pointerLine.setAttribute('stroke-width', '3.6');
+      pointerLine.setAttribute('stroke-linecap', 'round');
+      pointerLine.setAttribute('stroke-opacity', '0.95');
+      svg.appendChild(pointerLine);
+
+    }
+
+    function render() {
+      renderStatus();
+      renderQueues();
+      renderTasks();
+      renderFlowSteps();
+      drawWheel();
+    }
+
+    document.getElementById('btnStart').addEventListener('click', startWorker);
+    document.getElementById('btnPlay').addEventListener('click', play);
+    document.getElementById('btnPause').addEventListener('click', pause);
+    document.getElementById('btnSubStep').addEventListener('click', stepTickSubStep);
+    document.getElementById('btnStep').addEventListener('click', stepTickPhased);
+    document.getElementById('btnReset').addEventListener('click', resetState);
+    document.getElementById('btnStop').addEventListener('click', stopWorker);
+
+    document.getElementById('btnApply').addEventListener('click', () => {
+      state.tickDuration = Math.max(1, Number(ui.tickDurationInput.value) || 100);
+      const normalized = normalizeWheelSize(Number(ui.wheelSizeInput.value) || 16);
+      state.wheelSize = normalized;
+      ui.wheelSizeInput.value = normalized;
+      state.maxPendingTimeouts = Number(ui.maxPendingInput.value);
+      initWheel();
+      log(`应用参数: tickDuration ${state.tickDuration}, wheelSize ${state.wheelSize}, maxPending ${state.maxPendingTimeouts}`);
+      render();
+    });
+
+    document.getElementById('btnAddTask').addEventListener('click', () => {
+      const delay = Number(document.getElementById('addDelay').value) || 0;
+      const label = document.getElementById('addLabel').value.trim();
+      const deadlineVal = document.getElementById('addDeadline').value;
+      const deadline = deadlineVal ? Number(deadlineVal) : null;
+      addTimeout({ delay, label, deadline });
+    });
+
+    document.getElementById('btnCancel').addEventListener('click', () => {
+      const id = Number(document.getElementById('cancelId').value);
+      if (id) cancelTimeout(id);
+    });
+
+    document.getElementById('btnBulk').addEventListener('click', () => {
+      const count = Math.max(1, Number(document.getElementById('bulkCount').value) || 1);
+      const min = Number(document.getElementById('bulkMin').value) || 0;
+      const max = Number(document.getElementById('bulkMax').value) || min;
+      for (let i = 0; i < count; i++) {
+        const delay = Math.floor(min + Math.random() * (max - min));
+        addTimeout({ delay, label: `bulk-${i + 1}` });
+      }
+    });
+
+    document.getElementById('sceneNormal').addEventListener('click', () => {
+      resetState();
+      const tick = state.tickDuration;
+      const wheelSpan = state.wheelSize * tick;
+      startWorker();
+      addTimeout({ delay: 4 * tick, label: 'A' });
+      addTimeout({ delay: 9 * tick, label: 'B' });
+      addTimeout({ delay: wheelSpan + 2 * tick, label: 'C' });
+      log('加载场景: 正常过期');
+    });
+
+    document.getElementById('sceneCancel').addEventListener('click', () => {
+      resetState();
+      const tick = state.tickDuration;
+      startWorker();
+      const t1 = addTimeout({ delay: 8 * tick, label: 'to-cancel' });
+      addTimeout({ delay: 12 * tick, label: 'survive' });
+      if (t1) cancelTimeout(t1.id);
+      log('加载场景: 取消任务');
+    });
+
+    document.getElementById('sceneStop').addEventListener('click', () => {
+      resetState();
+      const tick = state.tickDuration;
+      const wheelSpan = state.wheelSize * tick;
+      startWorker();
+      addTimeout({ delay: wheelSpan + 4 * tick, label: 'long-task-1' });
+      addTimeout({ delay: wheelSpan + 8 * tick, label: 'long-task-2' });
+      stopWorker();
+      log('加载场景: stop 后未处理');
+    });
+
+    document.getElementById('sceneReject').addEventListener('click', () => {
+      resetState();
+      state.maxPendingTimeouts = 2;
+      ui.maxPendingInput.value = 2;
+      const tick = state.tickDuration;
+      startWorker();
+      addTimeout({ delay: 6 * tick, label: 'first' });
+      addTimeout({ delay: 10 * tick, label: 'second' });
+      addTimeout({ delay: 14 * tick, label: 'reject-me' });
+      log('加载场景: maxPendingTimeouts 拒绝');
+    });
+
+    initWheel();
+    render();
+    startTimeIndicator();
+    log('系统准备就绪, 可添加任务或播放');
+  </script>
+</body>
+</html>
