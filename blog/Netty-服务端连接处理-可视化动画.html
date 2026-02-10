@@ -1,0 +1,4469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Netty 服务端启动与连接处理流程图</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+    :root {
+      color-scheme: dark;
+      --bg: #070f1d;
+      --bg-soft: #0f172a;
+      --panel: rgba(15, 23, 42, 0.78);
+      --panel-strong: rgba(15, 23, 42, 0.94);
+      --panel-elev: rgba(30, 41, 59, 0.85);
+      --border: rgba(148, 163, 184, 0.24);
+      --text: #e2e8f0;
+      --text-strong: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-strong: #0ea5e9;
+      --accent-2: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --inbound: #38bdf8;
+      --outbound: #22c55e;
+      --thread-boss: rgba(59, 130, 246, 0.14);
+      --thread-worker: rgba(34, 197, 94, 0.12);
+      --thread-business: rgba(249, 115, 22, 0.14);
+      --shadow: 0 20px 42px rgba(2, 6, 23, 0.5);
+      --shadow-soft: 0 10px 24px rgba(2, 6, 23, 0.35);
+      --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --radius-sm: 10px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(860px 480px at 8% -18%, rgba(56, 189, 248, 0.2), transparent 62%),
+        radial-gradient(860px 480px at 92% -16%, rgba(34, 197, 94, 0.18), transparent 62%),
+        linear-gradient(180deg, rgba(15, 23, 42, 0.9), rgba(7, 15, 29, 1));
+      color: var(--text);
+      line-height: 1.5;
+      overflow: auto;
+    }
+
+    .skip-link {
+      position: absolute;
+      left: 12px;
+      top: -48px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: #f8fafc;
+      color: #0f172a;
+      z-index: 99;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 600;
+      transition: top 0.2s ease;
+    }
+
+    .skip-link:focus {
+      top: 12px;
+    }
+
+    header {
+      min-height: 68px;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-strong);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      position: sticky;
+      top: 0;
+      z-index: 30;
+    }
+
+    .title-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: clamp(16px, 1.35vw, 21px);
+      letter-spacing: 0.2px;
+      color: var(--text-strong);
+      line-height: 1.2;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.1px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 65vw;
+    }
+
+    .status {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    .status span {
+      background: linear-gradient(180deg, rgba(30, 41, 59, 0.75), rgba(15, 23, 42, 0.92));
+      padding: 5px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.07);
+    }
+
+    .container {
+      min-height: calc(100vh - 68px);
+      display: grid;
+      grid-template-columns: minmax(300px, 360px) minmax(640px, 1fr) minmax(260px, 320px);
+      grid-template-areas:
+        "left stage right"
+        "log log right";
+      grid-template-rows: 1fr minmax(220px, auto);
+      gap: 12px;
+      padding: 12px;
+    }
+
+    .left-panel {
+      grid-area: left;
+      position: sticky;
+      top: 82px;
+      max-height: calc(100vh - 94px);
+      overflow: auto;
+    }
+
+    .stage-panel {
+      grid-area: stage;
+      position: relative;
+      min-width: 0;
+    }
+
+    .right-panel {
+      grid-area: right;
+      min-width: 0;
+    }
+
+    .log-panel {
+      grid-area: log;
+      min-width: 0;
+    }
+
+    .panel {
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.76));
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 12px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 12px;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.72px;
+      font-family: var(--mono);
+    }
+
+    .group {
+      background: linear-gradient(180deg, rgba(30, 41, 59, 0.74), rgba(15, 23, 42, 0.85));
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 10px;
+      margin-bottom: 10px;
+      box-shadow: var(--shadow-soft);
+    }
+
+    .group:last-child {
+      margin-bottom: 0;
+    }
+
+    .group-title {
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 8px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      font-family: var(--mono);
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      align-items: center;
+    }
+
+    .scenario-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 7px;
+    }
+
+    .scenario-row button {
+      height: auto;
+      padding: 8px 10px;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 6px;
+      text-align: left;
+    }
+
+    .scenario-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-strong);
+    }
+
+    .scenario-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .scenario-row .tag {
+      font-size: 9px;
+      padding: 1px 6px;
+    }
+
+    .filter-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 7px;
+    }
+
+    .play-controls {
+      display: grid;
+      gap: 8px;
+    }
+
+    .play-row {
+      display: grid;
+      gap: 7px;
+    }
+
+    .play-row.row-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .play-row.row-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .play-row button {
+      width: 100%;
+    }
+
+    button {
+      height: 34px;
+      padding: 0 12px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      cursor: pointer;
+      color: #0b1220;
+      background: linear-gradient(135deg, #22c55e, #16a34a);
+      font-weight: 600;
+      font-size: 11px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 10px 18px rgba(34, 197, 94, 0.28);
+      transition: transform 0.2s ease, filter 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+      user-select: none;
+    }
+
+    button.secondary {
+      background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+      box-shadow: 0 10px 18px rgba(56, 189, 248, 0.3);
+    }
+
+    button.warn {
+      background: linear-gradient(135deg, #f59e0b, #f97316);
+      box-shadow: 0 10px 18px rgba(245, 158, 11, 0.3);
+    }
+
+    button.neutral {
+      background: linear-gradient(135deg, #475569, #334155);
+      color: #f8fafc;
+      box-shadow: 0 10px 18px rgba(71, 85, 105, 0.4);
+    }
+
+    button:hover:not(:disabled) {
+      transform: translateY(-1px);
+      filter: brightness(1.04);
+    }
+
+    button:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    button:disabled {
+      opacity: 0.48;
+      cursor: not-allowed;
+      box-shadow: none;
+      filter: grayscale(0.25);
+    }
+
+    .toggle {
+      background: linear-gradient(135deg, #475569, #334155);
+      color: #f8fafc;
+      box-shadow: 0 10px 18px rgba(15, 23, 42, 0.45);
+    }
+
+    .toggle.active {
+      background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+      color: #0b1220;
+      box-shadow: 0 10px 18px rgba(56, 189, 248, 0.35);
+    }
+
+    .progress-metrics {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    input[type="range"]:disabled {
+      cursor: not-allowed;
+      opacity: 0.48;
+    }
+
+    .hint {
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .stage-toolbar {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .toolbar-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .scenario-badge,
+    .play-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 11px;
+      color: var(--text);
+      background: rgba(15, 23, 42, 0.82);
+      font-family: var(--mono);
+    }
+
+    .scenario-badge {
+      border-color: rgba(56, 189, 248, 0.4);
+      color: #bae6fd;
+    }
+
+    .scenario-badge .badge-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+      color: var(--text-strong);
+    }
+
+    .scenario-badge .badge-tags {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .scenario-badge .tag {
+      font-size: 9px;
+      border-color: rgba(56, 189, 248, 0.45);
+      color: #bae6fd;
+      background: rgba(15, 23, 42, 0.9);
+    }
+
+    .scenario-badge.exception {
+      border-color: rgba(245, 158, 11, 0.45);
+      color: #fde68a;
+    }
+
+    .pulse-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: #94a3b8;
+      box-shadow: 0 0 0 rgba(148, 163, 184, 0.4);
+    }
+
+    .pulse-dot.running {
+      background: #22c55e;
+      animation: pulse 1.6s infinite;
+    }
+
+    .stage-grid {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .stage-canvas {
+      position: relative;
+      min-height: 400px;
+    }
+
+    .flow-lines {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .flow-line {
+      stroke: rgba(148, 163, 184, 0.7);
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      filter: drop-shadow(0 0 6px rgba(148, 163, 184, 0.55));
+    }
+
+    .flow-line.static {
+      stroke-dasharray: none;
+      opacity: 0.9;
+    }
+
+    .flow-line.inbound {
+      stroke: rgba(56, 189, 248, 0.95);
+      filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.72));
+    }
+
+    .flow-line.outbound {
+      stroke: rgba(34, 197, 94, 0.95);
+      filter: drop-shadow(0 0 6px rgba(34, 197, 94, 0.7));
+    }
+
+    .flow-dot {
+      fill: rgba(56, 189, 248, 0.95);
+      filter: drop-shadow(0 0 4px rgba(56, 189, 248, 0.7));
+    }
+
+    .flow-dot.outbound {
+      fill: rgba(34, 197, 94, 0.95);
+      filter: drop-shadow(0 0 4px rgba(34, 197, 94, 0.65));
+    }
+
+    .lane-section {
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      padding: 14px;
+      background: rgba(15, 23, 42, 0.64);
+      box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.06);
+    }
+
+    .lane-section.setup {
+      background: rgba(148, 163, 184, 0.08);
+    }
+
+    .lane-section.boss {
+      background: var(--thread-boss);
+    }
+
+    .lane-section.worker {
+      background: var(--thread-worker);
+    }
+
+    .lane-section.business {
+      background: var(--thread-business);
+    }
+
+    .lane-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 10px;
+      color: var(--muted);
+      font-family: var(--mono);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: rgba(15, 23, 42, 0.84);
+      margin-bottom: 12px;
+    }
+
+    .lane-content {
+      display: grid;
+      gap: 12px;
+    }
+
+    .lane-content.setup {
+      grid-template-columns: repeat(2, minmax(170px, 1fr));
+    }
+
+    .lane-content.boss,
+    .lane-content.worker {
+      grid-template-columns: repeat(3, minmax(170px, 1fr));
+    }
+
+    .lane-content.boss {
+      grid-template-areas:
+        "boss selector ."
+        "server accept acceptor";
+    }
+
+    .boss-node {
+      grid-area: boss;
+    }
+
+    .boss-selector-node {
+      grid-area: selector;
+    }
+
+    .boss-server-node {
+      grid-area: server;
+    }
+
+    .boss-accept-node {
+      grid-area: accept;
+    }
+
+    .boss-acceptor-node {
+      grid-area: acceptor;
+    }
+
+    .lane-content.worker {
+      grid-template-areas:
+        "worker selector ."
+        "task scheduled tailtask"
+        "child connect ."
+        "pipeline head tail";
+    }
+
+    .worker-node {
+      grid-area: worker;
+    }
+
+    .worker-selector-node {
+      grid-area: selector;
+    }
+
+    .task-queue-node {
+      grid-area: task;
+    }
+
+    .scheduled-queue-node {
+      grid-area: scheduled;
+    }
+
+    .tail-task-node {
+      grid-area: tailtask;
+    }
+
+    .child-node {
+      grid-area: child;
+    }
+
+    .connect-node {
+      grid-area: connect;
+    }
+
+    .pipeline-node {
+      grid-area: pipeline;
+    }
+
+    .head-node {
+      grid-area: head;
+    }
+
+    .tail-node {
+      grid-area: tail;
+    }
+
+    .lane-content.business {
+      grid-template-columns: repeat(4, minmax(145px, 1fr));
+    }
+
+    .chain-pill {
+      margin-top: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.34);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 10px;
+      color: var(--text-strong);
+      background: rgba(15, 23, 42, 0.87);
+      font-family: var(--mono);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      line-height: 1.2;
+    }
+
+    .chain-node {
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--text-strong);
+      box-shadow: none;
+      white-space: nowrap;
+    }
+
+    .chain-link {
+      position: relative;
+      width: 26px;
+      height: 10px;
+      flex: 0 0 auto;
+      display: inline-block;
+      vertical-align: middle;
+    }
+
+    .chain-link::before {
+      content: "";
+      position: absolute;
+      left: 4px;
+      right: 4px;
+      top: 50%;
+      height: 2px;
+      background: rgba(148, 163, 184, 0.85);
+      transform: translateY(-50%);
+      border-radius: 999px;
+    }
+
+    .chain-link .arrow {
+      position: absolute;
+      top: 50%;
+      width: 0;
+      height: 0;
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      transform: translateY(-50%);
+    }
+
+    .chain-link .arrow.left {
+      left: 0;
+      border-right: 6px solid rgba(148, 163, 184, 0.9);
+    }
+
+    .chain-link .arrow.right {
+      right: 0;
+      border-left: 6px solid rgba(148, 163, 184, 0.9);
+    }
+
+    .chain-link.inline {
+      width: 18px;
+      height: 8px;
+    }
+
+    .chain-link.inline .arrow {
+      border-top-width: 3px;
+      border-bottom-width: 3px;
+    }
+
+    .chain-link.inline .arrow.left {
+      border-right-width: 5px;
+    }
+
+    .chain-link.inline .arrow.right {
+      border-left-width: 5px;
+    }
+
+    .node {
+      position: relative;
+      width: 100%;
+      padding: 10px 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.72);
+      color: var(--text);
+      font-size: 11px;
+      box-shadow: 0 12px 22px rgba(2, 6, 23, 0.4);
+      transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+      z-index: 2;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .node:hover {
+      transform: translateY(-1px);
+      border-color: rgba(56, 189, 248, 0.45);
+      background: rgba(15, 23, 42, 0.9);
+    }
+
+    .node .title {
+      font-weight: 600;
+      color: var(--text-strong);
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+
+    .node .thread-tag {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 10px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    .node.active {
+      border-color: rgba(56, 189, 248, 0.82);
+      box-shadow: 0 0 18px rgba(56, 189, 248, 0.42);
+      transform: translateY(-1px);
+    }
+
+    .node.inbound.active {
+      border-color: rgba(56, 189, 248, 0.9);
+      box-shadow: 0 0 18px rgba(56, 189, 248, 0.58);
+    }
+
+    .node.outbound.active {
+      border-color: rgba(34, 197, 94, 0.9);
+      box-shadow: 0 0 18px rgba(34, 197, 94, 0.56);
+    }
+
+    .node.selected {
+      border-color: rgba(245, 158, 11, 0.85);
+      box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.6), 0 12px 22px rgba(2, 6, 23, 0.44);
+    }
+
+    .flow-steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .flow-step {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      font-size: 10px;
+      color: var(--muted);
+      background: rgba(15, 23, 42, 0.84);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+      cursor: pointer;
+      user-select: none;
+      line-height: 1.45;
+      display: grid;
+      gap: 6px;
+    }
+
+    .flow-step:hover {
+      transform: translateY(-1px);
+      border-color: rgba(56, 189, 248, 0.45);
+    }
+
+    .flow-step.active {
+      border-color: rgba(34, 197, 94, 0.7);
+      color: var(--text-strong);
+      box-shadow: 0 0 10px rgba(34, 197, 94, 0.35);
+    }
+
+    .flow-step .step-title {
+      color: var(--text-strong);
+      font-size: 11px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: baseline;
+    }
+
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      font-size: 9px;
+      color: var(--muted);
+      font-family: var(--mono);
+      background: rgba(15, 23, 42, 0.84);
+      white-space: nowrap;
+    }
+
+    .tag.clickable {
+      cursor: pointer;
+      transition: border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .tag.clickable:hover {
+      border-color: rgba(56, 189, 248, 0.6);
+      color: var(--text-strong);
+    }
+
+    .tag.active {
+      border-color: rgba(56, 189, 248, 0.65);
+      color: var(--text-strong);
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.3);
+    }
+
+    .tag.scope.branch {
+      border-color: rgba(245, 158, 11, 0.5);
+      color: #fde68a;
+    }
+
+    .tag.scope.other {
+      border-color: rgba(248, 113, 113, 0.5);
+      color: #fecaca;
+    }
+
+    .tag.scope.client {
+      border-color: rgba(56, 189, 248, 0.5);
+      color: #bae6fd;
+    }
+
+    .tag.filter.read,
+    .tag.filter.client {
+      border-color: rgba(56, 189, 248, 0.6);
+      color: #bae6fd;
+    }
+
+    .tag.filter.write {
+      border-color: rgba(34, 197, 94, 0.6);
+      color: #bbf7d0;
+    }
+
+    .tag.filter.tls {
+      border-color: rgba(14, 165, 233, 0.6);
+      color: #bae6fd;
+    }
+
+    .tag.filter.close {
+      border-color: rgba(248, 113, 113, 0.6);
+      color: #fecaca;
+    }
+
+    .tag.filter.exception {
+      border-color: rgba(239, 68, 68, 0.6);
+      color: #fecaca;
+    }
+
+    .tag.filter.backpressure {
+      border-color: rgba(249, 115, 22, 0.6);
+      color: #fed7aa;
+    }
+
+    .tag.filter.task {
+      border-color: rgba(168, 85, 247, 0.6);
+      color: #e9d5ff;
+    }
+
+    .tag.filter.idle {
+      border-color: rgba(148, 163, 184, 0.6);
+      color: #e2e8f0;
+    }
+
+    .tag.filter.shutdown {
+      border-color: rgba(245, 158, 11, 0.6);
+      color: #fde68a;
+    }
+
+    .log {
+      height: 150px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      background: rgba(15, 23, 42, 0.85);
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .log .line {
+      margin-bottom: 5px;
+      line-height: 1.45;
+    }
+
+    .legend {
+      display: grid;
+      gap: 8px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .legend .pill {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(15, 23, 42, 0.7);
+      width: 100%;
+    }
+
+    .legend .pill.clickable {
+      cursor: pointer;
+      transition: border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .legend .pill.clickable:hover {
+      border-color: rgba(56, 189, 248, 0.6);
+      color: var(--text-strong);
+    }
+
+    .legend .pill.active {
+      border-color: rgba(56, 189, 248, 0.65);
+      color: var(--text-strong);
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
+    }
+
+    .legend .pill .tag {
+      font-size: 9px;
+      margin-left: auto;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .dot.inbound {
+      background: var(--inbound);
+    }
+
+    .dot.outbound {
+      background: var(--outbound);
+    }
+
+    .method-list {
+      margin: 6px 0 0 16px;
+      padding: 0;
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .source-list {
+      list-style: none;
+      margin: 6px 0 0;
+      padding: 0;
+      display: grid;
+      gap: 7px;
+    }
+
+    .source-item {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 7px;
+      background: rgba(15, 23, 42, 0.7);
+      display: grid;
+      gap: 4px;
+    }
+
+    .source-symbol,
+    .source-location {
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.45;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    .source-symbol {
+      color: var(--text-strong);
+    }
+
+    .source-location {
+      color: #7dd3fc;
+    }
+
+    .source-note {
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+
+    .source-empty {
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.45;
+      background: rgba(15, 23, 42, 0.52);
+    }
+
+    .node-inspector {
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.76);
+      border-radius: 10px;
+      padding: 8px;
+      min-height: 76px;
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .node-inspector strong {
+      display: block;
+      color: var(--text-strong);
+      margin-bottom: 4px;
+      font-size: 11px;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.45);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(100, 116, 139, 0.55);
+      border-radius: 999px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(148, 163, 184, 0.7);
+    }
+
+    @keyframes pulse {
+      0% {
+        box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45);
+      }
+      70% {
+        box-shadow: 0 0 0 9px rgba(34, 197, 94, 0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+      }
+    }
+
+    @media (max-width: 1540px) {
+      .container {
+        grid-template-columns: minmax(250px, 300px) minmax(540px, 1fr) minmax(250px, 300px);
+      }
+
+      .lane-content.business {
+        grid-template-columns: repeat(2, minmax(150px, 1fr));
+      }
+    }
+
+    @media (max-width: 1260px) {
+      .container {
+        grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+        grid-template-areas:
+          "left right"
+          "stage stage"
+          "log log";
+        grid-template-rows: auto minmax(520px, 1fr) auto;
+      }
+
+      .left-panel {
+        position: relative;
+        top: 0;
+        max-height: none;
+      }
+
+      .right-panel {
+        min-height: 0;
+      }
+    }
+
+    @media (max-width: 960px) {
+      header {
+        position: relative;
+      }
+
+      .subtitle {
+        max-width: 100%;
+      }
+
+      .container {
+        min-height: auto;
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "left"
+          "stage"
+          "right"
+          "log";
+        grid-template-rows: auto;
+        padding: 10px;
+      }
+
+      .lane-content.setup,
+      .lane-content.boss,
+      .lane-content.worker,
+      .lane-content.business {
+        grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+        grid-template-areas: none;
+      }
+
+      .lane-content.boss .node {
+        grid-area: auto;
+      }
+
+      .lane-content.worker .node {
+        grid-area: auto;
+      }
+
+      .status {
+        justify-content: flex-start;
+      }
+
+      .flow-steps {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      }
+
+      .scenario-row {
+        grid-template-columns: 1fr;
+      }
+
+      .filter-row {
+        grid-template-columns: 1fr;
+      }
+
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * {
+        scroll-behavior: auto;
+      }
+
+      .pulse-dot.running {
+        animation: none;
+      }
+
+      .node,
+      button,
+      .flow-step {
+        transition: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">跳转到主要内容</a>
+  <header>
+    <div class="title-wrap">
+      <h1>Netty 服务端启动到连接处理流程图</h1>
+      <div class="subtitle">可视化演示 ServerBootstrap、Boss/Worker EventLoop 与 Pipeline 的调用路径</div>
+    </div>
+    <div class="status">
+      <span id="status-step">当前步骤: -</span>
+      <span id="status-thread">线程: -</span>
+      <span id="status-channel">Channel: -</span>
+      <span id="status-key">SelectionKey: -</span>
+    </div>
+  </header>
+
+  <main class="container" id="mainContent">
+    <section class="panel left-panel">
+      <h2>控制台</h2>
+      <div class="group">
+        <div class="group-title">场景选择</div>
+        <div class="scenario-row">
+          <button id="btn-normal" class="toggle active" aria-label="切换到正常流程" aria-pressed="true">
+            <span class="scenario-label">正常流程</span>
+            <span class="scenario-tags">
+              <span class="tag filter read clickable" data-filter-tag="read">读</span>
+              <span class="tag filter write clickable" data-filter-tag="write">写</span>
+            </span>
+          </button>
+          <button id="btn-startup" class="toggle" aria-label="切换到服务端启动到 OP_ACCEPT 注册流程" aria-pressed="false">
+            <span class="scenario-label">启动细化(OP_ACCEPT)</span>
+          </button>
+          <button id="btn-exception" class="toggle" aria-label="切换到异常与回收流程" aria-pressed="false">
+            <span class="scenario-label">异常与回收</span>
+            <span class="scenario-tags">
+              <span class="tag filter exception clickable" data-filter-tag="exception">异常</span>
+              <span class="tag filter close clickable" data-filter-tag="close">关闭</span>
+            </span>
+          </button>
+          <button id="btn-write" class="toggle" aria-label="切换到写路径细化流程" aria-pressed="false">
+            <span class="scenario-label">写路径细化</span>
+            <span class="scenario-tags">
+              <span class="tag filter write clickable" data-filter-tag="write">写</span>
+            </span>
+          </button>
+          <button id="btn-backpressure" class="toggle" aria-label="切换到背压流控流程" aria-pressed="false">
+            <span class="scenario-label">背压流控</span>
+            <span class="scenario-tags">
+              <span class="tag filter backpressure clickable" data-filter-tag="backpressure">背压</span>
+            </span>
+          </button>
+          <button id="btn-taskloop" class="toggle" aria-label="切换到 EventLoop 任务调度流程" aria-pressed="false">
+            <span class="scenario-label">任务调度</span>
+            <span class="scenario-tags">
+              <span class="tag filter task clickable" data-filter-tag="task">任务</span>
+            </span>
+          </button>
+          <button id="btn-tls-success" class="toggle" aria-label="切换到 TLS 握手成功流程" aria-pressed="false">
+            <span class="scenario-label">TLS 握手成功</span>
+            <span class="scenario-tags">
+              <span class="tag filter tls clickable" data-filter-tag="tls">TLS</span>
+            </span>
+          </button>
+          <button id="btn-tls-timeout" class="toggle" aria-label="切换到 TLS 握手超时流程" aria-pressed="false">
+            <span class="scenario-label">TLS 握手超时</span>
+            <span class="scenario-tags">
+              <span class="tag filter tls clickable" data-filter-tag="tls">TLS</span>
+            </span>
+          </button>
+          <button id="btn-idle" class="toggle" aria-label="切换到心跳超时流程" aria-pressed="false">
+            <span class="scenario-label">心跳超时</span>
+            <span class="scenario-tags">
+              <span class="tag filter idle clickable" data-filter-tag="idle">心跳</span>
+            </span>
+          </button>
+          <button id="btn-shutdown" class="toggle" aria-label="切换到优雅停机流程" aria-pressed="false">
+            <span class="scenario-label">优雅停机</span>
+            <span class="scenario-tags">
+              <span class="tag filter shutdown clickable" data-filter-tag="shutdown">停机</span>
+            </span>
+          </button>
+          <button id="btn-halfclose" class="toggle" aria-label="切换到半关闭与 FIN 流程" aria-pressed="false">
+            <span class="scenario-label">半关闭/FIN</span>
+            <span class="scenario-tags">
+              <span class="tag filter close clickable" data-filter-tag="close">关闭</span>
+            </span>
+          </button>
+          <button id="btn-client" class="toggle" aria-label="切换到客户端连接流程" aria-pressed="false">
+            <span class="scenario-label">客户端连接</span>
+            <span class="scenario-tags">
+              <span class="tag filter client clickable" data-filter-tag="client">客户端</span>
+            </span>
+          </button>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-title">步骤过滤</div>
+        <div class="filter-row" id="filterRow">
+          <button class="toggle active" data-filter="all" aria-label="显示全部步骤" aria-pressed="true">全部</button>
+          <button class="toggle" data-filter="read" aria-label="仅显示读路径步骤" aria-pressed="false">读</button>
+          <button class="toggle" data-filter="write" aria-label="仅显示写路径步骤" aria-pressed="false">写</button>
+          <button class="toggle" data-filter="tls" aria-label="仅显示 TLS 步骤" aria-pressed="false">TLS</button>
+          <button class="toggle" data-filter="close" aria-label="仅显示关闭步骤" aria-pressed="false">关闭</button>
+          <button class="toggle" data-filter="exception" aria-label="仅显示异常步骤" aria-pressed="false">异常</button>
+          <button class="toggle" data-filter="backpressure" aria-label="仅显示背压步骤" aria-pressed="false">背压</button>
+          <button class="toggle" data-filter="task" aria-label="仅显示任务调度步骤" aria-pressed="false">任务</button>
+          <button class="toggle" data-filter="idle" aria-label="仅显示心跳步骤" aria-pressed="false">心跳</button>
+          <button class="toggle" data-filter="shutdown" aria-label="仅显示停机步骤" aria-pressed="false">停机</button>
+          <button class="toggle" data-filter="client" aria-label="仅显示客户端步骤" aria-pressed="false">客户端</button>
+        </div>
+        <div class="hint">可多选过滤步骤列表与播放顺序；再次点击可取消。步骤卡片、场景标签、右侧说明标签均可直接触发过滤。</div>
+      </div>
+      <div class="group">
+        <div class="group-title">播放控制</div>
+        <div class="play-controls">
+          <div class="play-row row-3">
+            <button id="btn-reset" class="neutral" aria-label="重置流程">重置</button>
+            <button id="btn-play" class="secondary" aria-label="播放流程">播放</button>
+            <button id="btn-pause" class="warn" aria-label="暂停流程">暂停</button>
+          </div>
+          <div class="play-row row-2">
+            <button id="btn-prev" class="neutral" aria-label="执行上一步">上一步</button>
+            <button id="btn-step" aria-label="执行下一步">下一步</button>
+          </div>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-title">进度导航</div>
+        <input id="stepRange" type="range" min="0" max="0" step="1" value="0" aria-label="步骤导航" />
+        <div class="progress-metrics">
+          <span id="stepProgressText">进度 0 / 0</span>
+          <span id="stepProgressPercent">0%</span>
+        </div>
+        <div class="hint">拖动滑块可跳转步骤，自动播放会先暂停。</div>
+      </div>
+      <div class="group">
+        <div class="group-title">快捷键说明</div>
+        <div class="hint">Space：播放 / 暂停</div>
+        <div class="hint">R：重置</div>
+        <div class="hint">← / →：上一步 / 下一步</div>
+        <div class="hint">1~9：依次切换 正常 / 异常 / 写路径 / 背压 / 任务调度 / TLS 成功 / TLS 超时 / 心跳 / 停机</div>
+        <div class="hint">S：切换 启动细化（到 OP_ACCEPT 注册）</div>
+        <div class="hint">0：切换 客户端连接</div>
+        <div class="hint">H：切换 半关闭与 FIN</div>
+      </div>
+      <div class="group">
+        <div class="group-title">说明</div>
+        <div class="hint">
+          蓝色表示入站（accept / read），绿色表示出站（write / flush）。点击流程节点可查看职责说明。
+        </div>
+      </div>
+    </section>
+
+    <section class="panel stage-panel">
+      <h2>流程图（含线程模型）</h2>
+      <div class="stage-toolbar">
+        <div class="toolbar-row">
+          <div class="scenario-badge" id="scenarioBadge">场景：正常流程（启动到出站）</div>
+          <div class="play-state"><span class="pulse-dot" id="runDot"></span><span id="runStateText">状态：已暂停</span></div>
+        </div>
+      </div>
+      <div class="stage-canvas">
+        <svg id="flowLines" class="flow-lines" aria-hidden="true"></svg>
+        <div class="stage-grid">
+        <div class="lane-section setup">
+          <div class="lane-title">主线程：Bootstrap / ServerBootstrap 初始化配置</div>
+          <div class="lane-content setup">
+            <div class="node" data-node="bootstrap">
+              <div class="title">ServerBootstrap</div>
+              配置 Group / Channel
+              <div class="thread-tag">主线程</div>
+            </div>
+            <div class="node" data-node="client-bootstrap">
+              <div class="title">Bootstrap (Client)</div>
+              配置 Group / Channel
+              <div class="thread-tag">主线程</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="lane-section boss">
+          <div class="lane-title">Boss EventLoop 线程模型：监听 OP_ACCEPT</div>
+          <div class="lane-content boss">
+            <div class="node boss-node" data-node="boss-group">
+              <div class="title">Boss Group</div>
+              NioEventLoopGroup
+              <div class="thread-tag">Boss 线程</div>
+            </div>
+            <div class="node boss-server-node" data-node="server-channel">
+              <div class="title">ServerChannel</div>
+              bind / register
+              <div class="thread-tag">Boss 线程</div>
+            </div>
+            <div class="node boss-selector-node" data-node="boss-selector">
+              <div class="title">Boss Selector</div>
+              OP_ACCEPT ready
+              <div class="thread-tag">Boss 线程</div>
+            </div>
+            <div class="node boss-accept-node" data-node="accept">
+              <div class="title">accept()</div>
+              创建 NioSocketChannel
+              <div class="thread-tag">Boss 线程</div>
+            </div>
+            <div class="node boss-acceptor-node" data-node="acceptor">
+              <div class="title">ServerBootstrapAcceptor</div>
+              child 配置 / 注册
+              <div class="thread-tag">Boss 线程</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="lane-section worker">
+          <div class="lane-title">Worker EventLoop 线程模型：处理 OP_READ / OP_WRITE / OP_CONNECT</div>
+          <div class="lane-content worker">
+            <div class="node worker-node" data-node="worker-group">
+              <div class="title">Worker Group</div>
+              NioEventLoopGroup
+              <div class="thread-tag">Worker 线程池</div>
+            </div>
+            <div class="node worker-selector-node" data-node="worker-selector">
+              <div class="title">Worker Selector</div>
+              OP_READ / OP_WRITE / OP_CONNECT
+              <div class="thread-tag">Worker 线程</div>
+            </div>
+            <div class="node connect-node" data-node="connect">
+              <div class="title">connect()</div>
+              OP_CONNECT / finishConnect
+              <div class="thread-tag">Worker 线程</div>
+            </div>
+            <div class="node child-node" data-node="child-channel">
+              <div class="title">NioSocketChannel</div>
+              child / client channel
+              <div class="thread-tag">切换到 Worker</div>
+            </div>
+            <div class="node head-node" data-node="head-context">
+              <div class="title">HeadContext</div>
+              in/out 出入口
+              <div class="thread-tag">Worker 线程</div>
+            </div>
+            <div class="node tail-node" data-node="tail-context">
+              <div class="title">TailContext</div>
+              inbound 终点
+              <div class="thread-tag">Worker 线程</div>
+            </div>
+            <div class="node pipeline-node" data-node="pipeline">
+              <div class="title">ChannelPipeline</div>
+              双向链表 (<span class="chain-node">Head</span><span class="chain-link inline" aria-hidden="true"><span class="arrow left"></span><span class="arrow right"></span></span><span class="chain-node">Tail</span>)
+              <div class="thread-tag">Worker 线程</div>
+            </div>
+            <div class="node task-queue-node" data-node="task-queue">
+              <div class="title">Task Queue</div>
+              立即任务队列
+              <div class="thread-tag">Worker 线程</div>
+            </div>
+            <div class="node scheduled-queue-node" data-node="scheduled-queue">
+              <div class="title">Scheduled Queue</div>
+              定时任务队列
+              <div class="thread-tag">Worker 线程</div>
+            </div>
+            <div class="node tail-task-node" data-node="tail-task">
+              <div class="title">Tail Tasks</div>
+              I/O 循环尾任务
+              <div class="thread-tag">Worker 线程</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="lane-section business">
+          <div class="lane-title">业务线程模型（示例）：可为 Handler 指定 EventExecutorGroup（默认未指定时由 Worker 执行）</div>
+          <div class="lane-content business">
+            <div class="node" data-node="handler-1">
+              <div class="title">Ctx-1 + Handler-A</div>
+              AbstractChannelHandlerContext
+              <div class="thread-tag">业务线程-1</div>
+            </div>
+            <div class="node" data-node="handler-2">
+              <div class="title">Ctx-2 + Handler-B</div>
+              AbstractChannelHandlerContext
+              <div class="thread-tag">业务线程-2</div>
+            </div>
+            <div class="node" data-node="handler-3">
+              <div class="title">Ctx-3 + Handler-C</div>
+              AbstractChannelHandlerContext
+              <div class="thread-tag">业务线程-3</div>
+            </div>
+            <div class="node" data-node="handler-4">
+              <div class="title">Ctx-4 + Handler-D</div>
+              AbstractChannelHandlerContext
+              <div class="thread-tag">业务线程-4</div>
+            </div>
+          </div>
+          <div class="chain-pill" aria-label="Head 到 Tail 的双向链表：Head，Ctx-1，Ctx-2，Ctx-3，Ctx-4，Tail">
+            <span class="chain-node">Head</span>
+            <span class="chain-link" aria-hidden="true"><span class="arrow left"></span><span class="arrow right"></span></span>
+            <span class="chain-node">Ctx-1</span>
+            <span class="chain-link" aria-hidden="true"><span class="arrow left"></span><span class="arrow right"></span></span>
+            <span class="chain-node">Ctx-2</span>
+            <span class="chain-link" aria-hidden="true"><span class="arrow left"></span><span class="arrow right"></span></span>
+            <span class="chain-node">Ctx-3</span>
+            <span class="chain-link" aria-hidden="true"><span class="arrow left"></span><span class="arrow right"></span></span>
+            <span class="chain-node">Ctx-4</span>
+            <span class="chain-link" aria-hidden="true"><span class="arrow left"></span><span class="arrow right"></span></span>
+            <span class="chain-node">Tail</span>
+          </div>
+        </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel right-panel">
+      <h2>线程模型说明</h2>
+      <div class="legend">
+        <div class="pill clickable" data-filter-tag="read" role="button" tabindex="0" aria-label="过滤：读"><span class="dot inbound"></span>入站：accept / read / fireChannelRead<span class="tag filter read">读</span></div>
+        <div class="pill clickable" data-filter-tag="write" role="button" tabindex="0" aria-label="过滤：写"><span class="dot outbound"></span>出站：write / flush / doWrite<span class="tag filter write">写</span></div>
+        <div class="pill">Boss 线程：负责 OP_ACCEPT，并由 Acceptor 提交 child 到 Worker 注册</div>
+        <div class="pill">Worker 线程：I/O 读写与 selector</div>
+        <div class="pill">业务线程：可选 EventExecutorGroup（未指定时默认由 Worker 执行 Handler）</div>
+        <div class="pill">EventExecutorGroup：SINGLE_EVENTEXECUTOR_PER_GROUP=true（默认）时，同一 Channel 在该组内固定一个子 executor</div>
+        <div class="pill">传输范围：仅聚焦 NIO（NioEventLoop / NioSocketChannel）</div>
+        <div class="pill clickable" data-filter-tag="backpressure" role="button" tabindex="0" aria-label="过滤：背压">背压流控：高/低水位触发 channelWritabilityChanged<span class="tag filter backpressure">背压</span></div>
+        <div class="pill clickable" data-filter-tag="task" role="button" tabindex="0" aria-label="过滤：任务">EventLoop：processSelectedKeys → runAllTasks → tailTasks<span class="tag filter task">任务</span></div>
+        <div class="pill clickable" data-filter-tag="read" role="button" tabindex="0" aria-label="过滤：读">读循环：RecvByteBufAllocator + maxMessagesPerRead 决定 continueReading 批次<span class="tag filter read">读</span></div>
+        <div class="pill clickable" data-filter-tag="write" role="button" tabindex="0" aria-label="过滤：写">写循环：writeSpinCount 控制 doWrite 尝试次数，写不完才注册 OP_WRITE<span class="tag filter write">写</span></div>
+        <div class="pill clickable" data-filter-tag="close" role="button" tabindex="0" aria-label="过滤：关闭">关闭时序：已注册 Channel 通常在 deregister 的 invokeLater 任务中触发 fireChannelInactive / fireChannelUnregistered<span class="tag filter close">关闭</span></div>
+        <div class="pill clickable" data-filter-tag="exception" role="button" tabindex="0" aria-label="过滤：异常">接入退避：Acceptor 异常可短暂 setAutoRead(false) 暂停 accept<span class="tag filter exception">异常</span></div>
+        <div class="pill clickable" data-filter-tag="read" role="button" tabindex="0" aria-label="过滤：读">手动读：autoRead=false 时可用 channel.read() 单次拉取<span class="tag filter read">读</span></div>
+        <div class="pill clickable" data-filter-tag="read" role="button" tabindex="0" aria-label="过滤：读">autoRead/readPending：readPending=false 时 finally 才会 removeReadOp()<span class="tag filter read">读</span></div>
+        <div class="pill clickable" data-filter-tag="tls" role="button" tabindex="0" aria-label="过滤：TLS">TLS：SslHandler 握手成功后发布 SslHandshakeCompletionEvent<span class="tag filter tls">TLS</span></div>
+        <div class="pill clickable" data-filter-tag="tls" role="button" tabindex="0" aria-label="过滤：TLS">TLS 关闭：closeOutbound() 发送 close_notify，SslCloseCompletionEvent 表示关闭结果<span class="tag filter tls">TLS</span></div>
+        <div class="pill clickable" data-filter-tag="close" role="button" tabindex="0" aria-label="过滤：关闭">半关闭：allowHalfClosure=true 时触发 ChannelInputShutdownEvent / ChannelInputShutdownReadComplete<span class="tag filter close">关闭</span></div>
+        <div class="pill clickable" data-filter-tag="idle" role="button" tabindex="0" aria-label="过滤：心跳">心跳：IdleStateHandler 超时触发 IdleStateEvent（userEventTriggered）<span class="tag filter idle">心跳</span></div>
+        <div class="pill clickable" data-filter-tag="shutdown" role="button" tabindex="0" aria-label="过滤：停机">优雅停机：shutdownGracefully 受 quietPeriod/timeout 约束<span class="tag filter shutdown">停机</span></div>
+        <div class="pill clickable" data-filter-tag="read" role="button" tabindex="0" aria-label="过滤：读">解码边界：ByteToMessageDecoder 可累计半包并拆分粘包<span class="tag filter read">读</span></div>
+        <div class="pill clickable" data-filter-tag="read" role="button" tabindex="0" aria-label="过滤：读">ByteBuf 生命周期：入站后由业务侧按语义 release/retain<span class="tag filter read">读</span></div>
+      </div>
+      <div class="group" style="margin-top:10px;">
+        <div class="group-title">术语标识</div>
+        <div class="legend">
+          <div class="pill">默认行为：未额外配置时的 Netty 真实路径</div>
+          <div class="pill">示例配置：仅为教学可视化，非默认必需</div>
+          <div class="pill">异常场景：用于展示多种独立异常分支，非单连接必经的连续轨迹</div>
+          <div class="pill">Promise：内部路径常用 voidPromise()，不会触发监听器</div>
+          <div class="pill">关闭分支：未注册/重复 close 可能直接完成 promise，不触发 inactive/unregistered</div>
+          <div class="pill">状态词：ACTIVE/INACTIVE/UNREGISTERED；回调词：channelActive/channelInactive/channelUnregistered</div>
+        </div>
+      </div>
+      <div class="group" style="margin-top:10px;">
+        <div class="group-title">当前调用链</div>
+        <ul id="methodList" class="method-list"></ul>
+      </div>
+      <div class="group">
+        <div class="group-title">源码锚点（Netty Core）</div>
+        <ul id="sourceAnchorList" class="source-list">
+          <li class="source-empty">选择步骤后显示对应核心源码位置。</li>
+        </ul>
+      </div>
+      <div class="group">
+        <div class="group-title">节点职责（点击节点查看）</div>
+        <div id="nodeInspector" class="node-inspector">选择一个节点查看其在线程模型中的职责与作用。</div>
+      </div>
+    </section>
+
+    <section class="panel log-panel">
+      <h2>流程步骤与日志</h2>
+      <div class="flow-steps" id="flowSteps"></div>
+      <div class="log" id="logList"></div>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      running: false,
+      stepIndex: 0,
+      currentIndex: -1,
+      speed: 1,
+      log: [],
+      reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      playToken: 0,
+      animToken: 0,
+      scenario: 'normal',
+      stepToken: 0,
+      selectedNode: '',
+      filters: new Set()
+    };
+
+    const els = {
+      statusStep: document.getElementById('status-step'),
+      statusThread: document.getElementById('status-thread'),
+      statusChannel: document.getElementById('status-channel'),
+      statusKey: document.getElementById('status-key'),
+      btnPlay: document.getElementById('btn-play'),
+      btnPause: document.getElementById('btn-pause'),
+      btnPrev: document.getElementById('btn-prev'),
+      btnStep: document.getElementById('btn-step'),
+      btnReset: document.getElementById('btn-reset'),
+      btnNormal: document.getElementById('btn-normal'),
+      btnStartup: document.getElementById('btn-startup'),
+      btnException: document.getElementById('btn-exception'),
+      btnWrite: document.getElementById('btn-write'),
+      btnBackpressure: document.getElementById('btn-backpressure'),
+      btnTaskloop: document.getElementById('btn-taskloop'),
+      btnTlsSuccess: document.getElementById('btn-tls-success'),
+      btnTlsTimeout: document.getElementById('btn-tls-timeout'),
+      btnIdle: document.getElementById('btn-idle'),
+      btnShutdown: document.getElementById('btn-shutdown'),
+      btnHalfclose: document.getElementById('btn-halfclose'),
+      btnClient: document.getElementById('btn-client'),
+      stepRange: document.getElementById('stepRange'),
+      stepProgressText: document.getElementById('stepProgressText'),
+      stepProgressPercent: document.getElementById('stepProgressPercent'),
+      scenarioBadge: document.getElementById('scenarioBadge'),
+      runDot: document.getElementById('runDot'),
+      runStateText: document.getElementById('runStateText'),
+      flowSteps: document.getElementById('flowSteps'),
+      logList: document.getElementById('logList'),
+      methodList: document.getElementById('methodList'),
+      sourceAnchorList: document.getElementById('sourceAnchorList'),
+      nodeInspector: document.getElementById('nodeInspector'),
+      filterRow: document.getElementById('filterRow')
+    };
+
+    const stageCanvas = document.querySelector('.stage-canvas');
+    const flowLines = document.getElementById('flowLines');
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const staticLinks = [
+      ['bootstrap', 'boss-group'],
+      ['client-bootstrap', 'worker-group'],
+      ['boss-group', 'server-channel'],
+      ['server-channel', 'boss-selector'],
+      ['boss-selector', 'accept'],
+      ['accept', 'child-channel'],
+      ['accept', 'acceptor'],
+      ['acceptor', 'worker-group'],
+      ['child-channel', 'worker-selector'],
+      ['worker-selector', 'connect'],
+      ['connect', 'child-channel'],
+      ['worker-selector', 'head-context'],
+      ['head-context', 'pipeline'],
+      ['pipeline', 'tail-context'],
+      ['worker-selector', 'task-queue'],
+      ['scheduled-queue', 'task-queue'],
+      ['task-queue', 'tail-task'],
+      ['head-context', 'handler-1'],
+      ['handler-1', 'handler-2'],
+      ['handler-2', 'handler-3'],
+      ['handler-3', 'handler-4'],
+      ['handler-4', 'tail-context']
+    ];
+    const staticGroup = document.createElementNS(svgNS, 'g');
+    const dynamicGroup = document.createElementNS(svgNS, 'g');
+    if (flowLines) {
+      flowLines.appendChild(staticGroup);
+      flowLines.appendChild(dynamicGroup);
+    }
+
+    const nodeElements = Array.from(document.querySelectorAll('.node'));
+    const nodeById = new Map(nodeElements.map(node => [node.dataset.node, node]));
+    const filterButtons = Array.from(document.querySelectorAll('[data-filter]'));
+
+    function getNodeElement(id) {
+      return nodeById.get(id) || null;
+    }
+
+    const steps = [
+      {
+        id: 'bootstrap',
+        title: '启动 ServerBootstrap',
+        thread: '主线程',
+        channel: 'UNREGISTERED',
+        key: '-',
+        tone: 'inbound',
+        highlight: ['bootstrap', 'boss-group', 'worker-group'],
+        methods: ['new NioEventLoopGroup()', 'new ServerBootstrap()', 'group(boss, worker)', 'channel(NioServerSocketChannel)'],
+        anim: []
+      },
+      {
+        id: 'startup-config',
+        title: '配置 ServerBootstrap 与线程组',
+        thread: '主线程',
+        channel: 'UNREGISTERED',
+        key: '-',
+        tone: 'inbound',
+        branch: 'startup',
+        highlight: ['bootstrap', 'boss-group', 'worker-group'],
+        methods: ['ServerBootstrap.group(bossGroup, workerGroup)', 'channel(NioServerSocketChannel.class) + childHandler(...)', 'option()/childOption() 预置监听与子连接参数'],
+        anim: [
+          { from: 'bootstrap', to: 'boss-group', tone: 'inbound' },
+          { from: 'bootstrap', to: 'worker-group', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'startup-init-channel',
+        title: 'initAndRegister 创建 NioServerSocketChannel',
+        thread: '主线程',
+        channel: 'UNREGISTERED',
+        key: '-',
+        tone: 'inbound',
+        branch: 'startup',
+        highlight: ['bootstrap', 'server-channel'],
+        methods: ['AbstractBootstrap.initAndRegister()', 'channelFactory.newChannel() 创建 NioServerSocketChannel', 'ServerBootstrap.init(channel) 安装服务端 pipeline 初始化逻辑'],
+        anim: [
+          { from: 'bootstrap', to: 'server-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'startup-register-submit',
+        title: '提交 register 到 Boss EventLoop',
+        thread: '主线程 -> Boss 线程',
+        channel: 'UNREGISTERED',
+        key: '-',
+        tone: 'inbound',
+        branch: 'startup',
+        highlight: ['server-channel', 'boss-group'],
+        methods: ['config().group().register(channel) 返回 regFuture', '非 EventLoop 线程下通过 execute(...) 异步提交 register0', '此时 SelectionKey 尚未创建'],
+        anim: [
+          { from: 'server-channel', to: 'boss-group', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'startup-register0',
+        title: 'Boss 执行 register0/doRegister',
+        thread: 'Boss 线程',
+        channel: 'REGISTERED',
+        key: 'interestOps=0',
+        tone: 'inbound',
+        branch: 'startup',
+        highlight: ['boss-group', 'server-channel', 'boss-selector'],
+        methods: ['AbstractChannel.AbstractUnsafe.register0(...)', 'javaChannel.register(selector, 0, this) 先附着 key', '初次注册仅建立 SelectionKey，不关注 OP_ACCEPT'],
+        anim: [
+          { from: 'boss-group', to: 'boss-selector', tone: 'inbound' },
+          { from: 'server-channel', to: 'boss-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'startup-fire-registered',
+        title: '触发 channelRegistered（Acceptor 异步安装）',
+        thread: 'Boss 线程',
+        channel: 'REGISTERED',
+        key: 'interestOps=0',
+        tone: 'inbound',
+        branch: 'startup',
+        highlight: ['server-channel', 'acceptor'],
+        methods: ['pipeline.invokeHandlerAddedIfNeeded() 触发 ChannelInitializer.handlerAdded/initChannel', 'ServerBootstrap.init(...) 内部通过 ch.eventLoop().execute(...) 异步 addLast(ServerBootstrapAcceptor)', 'pipeline.fireChannelRegistered() 在 register0 中同步触发；Acceptor addLast 于后续任务执行'],
+        anim: [
+          { from: 'server-channel', to: 'acceptor', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'startup-bind',
+        title: 'doBind0 -> unsafe.bind',
+        thread: 'Boss 线程',
+        channel: 'REGISTERED',
+        key: 'interestOps=0',
+        tone: 'inbound',
+        branch: 'startup',
+        highlight: ['bootstrap', 'server-channel'],
+        methods: ['AbstractBootstrap.doBind0(...) 将 bind 封装为任务提交到同一 Boss EventLoop', 'doBind0 可早于 fireChannelRegistered 被调用，但 bind 任务实际执行不早于 register0 结束', 'AbstractChannel.AbstractUnsafe.bind(...) -> NioServerSocketChannel.doBind(...) 完成监听端口绑定'],
+        anim: [
+          { from: 'bootstrap', to: 'server-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'startup-active',
+        title: 'bind 成功后 channel 进入 ACTIVE',
+        thread: 'Boss 线程',
+        channel: 'ACTIVE',
+        key: 'interestOps=0',
+        tone: 'inbound',
+        branch: 'startup',
+        highlight: ['server-channel'],
+        methods: ['doBind 成功后状态从 INACTIVE -> ACTIVE', 'AbstractChannel.AbstractUnsafe.bind() 通过 invokeLater(...) 延迟 fireChannelActive()', '下一步由 channelActive 事件中的 autoRead 判定驱动 beginRead'],
+        anim: []
+      },
+      {
+        id: 'startup-begin-read',
+        title: 'channelActive 驱动 beginRead',
+        thread: 'Boss 线程',
+        channel: 'ACTIVE',
+        key: '准备注册 OP_ACCEPT',
+        tone: 'inbound',
+        branch: 'startup',
+        highlight: ['server-channel', 'boss-selector'],
+        methods: ['DefaultChannelPipeline.HeadContext.channelActive() 处理激活事件', 'readIfIsAutoRead() 命中 autoRead=true 时调用 channel.read()', '最终落到 AbstractChannel.AbstractUnsafe.beginRead()'],
+        anim: [
+          { from: 'server-channel', to: 'boss-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'startup-do-begin-read',
+        title: 'doBeginRead 计算 readInterestOp',
+        thread: 'Boss 线程',
+        channel: 'ACTIVE',
+        key: 'interestOps: 0 -> OP_ACCEPT',
+        tone: 'inbound',
+        branch: 'startup',
+        highlight: ['server-channel', 'boss-selector'],
+        methods: ['AbstractNioMessageChannel.doBeginRead()', 'readPending=true 并调用 AbstractNioChannel.doBeginRead()', 'ServerChannel 的 readInterestOp 固定为 SelectionKey.OP_ACCEPT'],
+        anim: [
+          { from: 'server-channel', to: 'boss-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'startup-op-accept-registered',
+        title: 'ServerSocketChannel 注册 OP_ACCEPT 完成',
+        thread: 'Boss 线程',
+        channel: 'ACTIVE',
+        key: 'OP_ACCEPT 已注册（等待就绪）',
+        tone: 'inbound',
+        branch: 'startup',
+        highlight: ['server-channel', 'boss-selector'],
+        methods: ['AbstractNioChannel.doBeginRead() 读取当前 key.interestOps()', 'SelectionKey.interestOps(interestOps | readInterestOp) 合并 OP_ACCEPT', '到此结束：仅完成 OP_ACCEPT 注册，尚未进入 OP_ACCEPT ready/accept()'],
+        anim: [
+          { from: 'server-channel', to: 'boss-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'client-bootstrap',
+        title: '启动 Bootstrap（Client）',
+        thread: '主线程',
+        channel: 'UNREGISTERED',
+        key: '-',
+        tone: 'inbound',
+        branch: 'client',
+        scope: 'client',
+        highlight: ['client-bootstrap', 'worker-group'],
+        methods: ['new Bootstrap()', 'group(worker)', 'channel(NioSocketChannel)', 'handler(...)'],
+        anim: [
+          { from: 'client-bootstrap', to: 'worker-group', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'client-register',
+        title: 'ClientChannel 注册到 EventLoop',
+        thread: 'Worker 线程',
+        channel: 'REGISTERED',
+        key: '-',
+        tone: 'inbound',
+        branch: 'client',
+        scope: 'client',
+        highlight: ['worker-group', 'worker-selector', 'child-channel'],
+        methods: ['register0() 绑定 EventLoop 并执行 doRegister()', 'EventLoop.register()', '后续进入 handlerAdded（ChannelInitializer.initChannel）与 channelRegistered 回调'],
+        anim: [
+          { from: 'worker-group', to: 'worker-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'client-connect',
+        title: '发起 connect()',
+        thread: '主线程 / Worker 线程',
+        channel: 'REGISTERED',
+        key: 'OP_CONNECT',
+        tone: 'outbound',
+        branch: 'client',
+        scope: 'client',
+        highlight: ['connect', 'child-channel'],
+        methods: ['Bootstrap.doConnect(...)', 'channel.connect(...) 在 EventLoop 中执行', 'doConnect(...) 可能返回 false 挂起 OP_CONNECT'],
+        anim: [
+          { from: 'child-channel', to: 'connect', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'client-op-connect',
+        title: 'OP_CONNECT 就绪',
+        thread: 'Worker 线程',
+        channel: 'REGISTERED',
+        key: 'OP_CONNECT',
+        tone: 'inbound',
+        branch: 'client',
+        scope: 'client',
+        highlight: ['worker-selector', 'connect'],
+        methods: ['select()', 'readyOps 命中 OP_CONNECT', 'unsafe.finishConnect()'],
+        anim: [
+          { from: 'worker-selector', to: 'connect', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'client-finish-connect',
+        title: 'finishConnect -> ACTIVE',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ（autoRead 时）',
+        tone: 'inbound',
+        branch: 'client',
+        scope: 'client',
+        highlight: ['connect', 'child-channel', 'pipeline'],
+        methods: ['finishConnect() 成功', 'fireChannelActive()', 'autoRead=true 时 beginRead() -> interestOps(OP_READ)'],
+        anim: [
+          { from: 'connect', to: 'child-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'register-boss',
+        title: 'ServerChannel 注册到 Boss',
+        thread: 'Boss 线程',
+        channel: 'REGISTERED',
+        key: '-',
+        tone: 'inbound',
+        highlight: ['server-channel', 'boss-group', 'boss-selector'],
+        methods: ['initAndRegister()', 'EventLoop.register()', 'fireChannelRegistered()'],
+        anim: [
+          { from: 'server-channel', to: 'boss-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'bind-active',
+        title: 'bind 成功并变为 ACTIVE',
+        thread: 'Boss 线程',
+        channel: 'ACTIVE',
+        key: 'OP_ACCEPT（autoRead 时）',
+        tone: 'inbound',
+        highlight: ['server-channel'],
+        methods: ['bind()', 'doBind()', 'fireChannelActive()', 'autoRead=true 时 beginRead() -> interestOps(OP_ACCEPT)'],
+        anim: [
+          { from: 'bootstrap', to: 'server-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'accept-ready',
+        title: 'OP_ACCEPT 就绪',
+        thread: 'Boss 线程',
+        channel: 'ACTIVE',
+        key: 'OP_ACCEPT',
+        tone: 'inbound',
+        highlight: ['boss-selector', 'accept'],
+        methods: ['select()', 'processSelectedKeys()', 'OP_ACCEPT ready'],
+        anim: [
+          { from: 'boss-selector', to: 'accept', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'accept',
+        title: 'accept 创建 child channel',
+        thread: 'Boss 线程',
+        channel: 'ACTIVE',
+        key: 'OP_ACCEPT',
+        tone: 'inbound',
+        highlight: ['accept'],
+        methods: ['accept()', 'new NioSocketChannel()'],
+        anim: [
+          { from: 'accept', to: 'child-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'acceptor',
+        title: 'ServerBootstrapAcceptor 配置并提交注册',
+        thread: 'Boss 线程',
+        channel: 'ACTIVE',
+        key: 'OP_ACCEPT',
+        tone: 'inbound',
+        highlight: ['acceptor', 'child-channel', 'worker-group'],
+        methods: ['child.pipeline().addLast(childHandler)', 'setOptions / setAttrs', 'childGroup.register(child)'],
+        anim: [
+          { from: 'accept', to: 'acceptor', tone: 'inbound' },
+          { from: 'acceptor', to: 'worker-group', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'acceptor-backoff',
+        title: 'Acceptor 异常退避',
+        thread: 'Boss 线程',
+        channel: 'ACTIVE（暂缓接入）',
+        key: '临时移除 OP_ACCEPT',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'branch',
+        highlight: ['acceptor', 'server-channel', 'boss-selector'],
+        methods: ['ServerBootstrapAcceptor.exceptionCaught()', 'config.setAutoRead(false) 暂停 accept', 'eventLoop.schedule(enableAutoReadTask, 1s) 到期恢复 autoRead'],
+        anim: [
+          { from: 'acceptor', to: 'server-channel', tone: 'inbound' },
+          { from: 'server-channel', to: 'boss-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'child-register-failed',
+        title: 'child 注册失败并强制回收',
+        thread: 'Boss 线程 / Worker 线程',
+        channel: 'CHILD CLOSED',
+        key: '-',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'other',
+        highlight: ['acceptor', 'child-channel', 'worker-group'],
+        methods: ['childGroup.register(child) 失败', 'ChannelFutureListener.operationComplete() -> forceClose(child, cause)', 'child.unsafe().closeForcibly() 并记录 warn 日志', '该 child 分支到此结束，不进入该 child 的后续 channelActive（后续步骤用于演示其他连接/其他异常分支）'],
+        anim: [
+          { from: 'acceptor', to: 'worker-group', tone: 'inbound' },
+          { from: 'worker-group', to: 'child-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'register-child',
+        title: '注册到 Worker EventLoop',
+        thread: 'Worker 线程',
+        channel: 'REGISTERED',
+        key: '-',
+        tone: 'inbound',
+        highlight: ['child-channel', 'worker-group', 'worker-selector'],
+        methods: ['register0() 执行 doRegister()', '绑定 EventLoop 并准备触发后续 registered/active 事件'],
+        anim: [
+          { from: 'child-channel', to: 'worker-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'pipeline-init',
+        title: '初始化 Pipeline',
+        thread: 'Worker 线程',
+        channel: 'REGISTERED',
+        key: '-',
+        tone: 'inbound',
+        highlight: ['pipeline'],
+        methods: ['invokeHandlerAddedIfNeeded()（若 handler/childHandler 为 ChannelInitializer，会在 handlerAdded 时回调 initChannel(Channel)，且发生在 fireChannelRegistered 之前）', 'addLast(Decoder)（示例）', 'addLast(BizHandler)（示例）', 'addLast(Encoder)（示例）'],
+        anim: [
+          { from: 'worker-selector', to: 'pipeline', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'pipeline-executor',
+        title: 'Pipeline：选择/固定子 executor',
+        thread: 'Worker 线程',
+        channel: 'REGISTERED',
+        key: '-',
+        tone: 'inbound',
+        highlight: ['pipeline', 'handler-1'],
+        methods: ['DefaultChannelPipeline.childExecutor(group)', 'SINGLE_EVENTEXECUTOR_PER_GROUP=true 时同一 Channel 固定一个子 executor'],
+        anim: [
+          { from: 'pipeline', to: 'handler-1', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'child-registered',
+        title: 'child channel REGISTERED',
+        thread: 'Worker 线程',
+        channel: 'REGISTERED',
+        key: '-',
+        tone: 'inbound',
+        highlight: ['child-channel'],
+        methods: ['fireChannelRegistered()'],
+        anim: [
+          { from: 'pipeline', to: 'child-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'child-active',
+        title: 'child channel ACTIVE',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ（autoRead 时）',
+        tone: 'inbound',
+        highlight: ['child-channel'],
+        methods: ['fireChannelActive()', 'autoRead=true 时 beginRead() -> interestOps(OP_READ)'],
+        anim: [
+          { from: 'pipeline', to: 'child-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'tls-starttls',
+        title: 'TLS：startTls 延迟握手',
+        thread: '业务线程 / Worker 线程',
+        channel: 'ACTIVE (TLS PENDING)',
+        key: '可触发 OP_WRITE',
+        tone: 'outbound',
+        branch: 'tls',
+        scope: 'branch',
+        highlight: ['pipeline', 'head-context', 'child-channel'],
+        methods: ['startTls=true 时 channelActive 不自动开始握手', '首次 write/flush 将先发送明文并随后启动握手（取决于配置/实现）'],
+        anim: [
+          { from: 'pipeline', to: 'head-context', tone: 'outbound' },
+          { from: 'head-context', to: 'child-channel', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'tls-handshake-start',
+        title: 'TLS：SslHandler 进入握手流程',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (TLS HANDSHAKING)',
+        key: '可能触发 OP_WRITE',
+        tone: 'outbound',
+        branch: 'tls',
+        scope: 'branch',
+        highlight: ['pipeline', 'head-context', 'child-channel'],
+        methods: ['pipeline.addLast(sslHandler)（示例）', 'SslHandler.channelActive() -> startHandshakeProcessing(true)', '服务端模式通常等待 ClientHello 到达后由 unwrap 驱动握手；客户端模式会主动 beginHandshake()'],
+        anim: [
+          { from: 'pipeline', to: 'head-context', tone: 'outbound' },
+          { from: 'head-context', to: 'child-channel', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'tls-handshake-timeout',
+        title: 'TLS：握手超时',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE -> CLOSING',
+        key: '-',
+        tone: 'inbound',
+        branch: 'tls',
+        scope: 'branch',
+        highlight: ['pipeline', 'handler-4'],
+        methods: ['handshakeTimeoutMillis 到期抛出 SslHandshakeTimeoutException', 'SslHandler 触发握手失败事件并关闭连接'],
+        anim: [
+          { from: 'pipeline', to: 'handler-4', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'tls-handshake-success',
+        title: 'TLS：握手完成并发布事件',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (TLS ESTABLISHED)',
+        key: '-',
+        tone: 'inbound',
+        branch: 'tls',
+        scope: 'branch',
+        highlight: ['pipeline', 'handler-1'],
+        methods: ['SslHandler.setHandshakeSuccess()', 'ctx.fireUserEventTriggered(SslHandshakeCompletionEvent.SUCCESS)', '业务可在 userEventTriggered 中切换到应用协议逻辑'],
+        anim: [
+          { from: 'pipeline', to: 'handler-1', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'read-ready',
+        title: 'OP_READ 就绪',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ',
+        tone: 'inbound',
+        highlight: ['worker-selector'],
+        methods: ['select()', 'processSelectedKeys()', 'unsafe.read()'],
+        anim: [
+          { from: 'worker-selector', to: 'child-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'read-loop',
+        title: 'NioByteUnsafe.read() 读循环',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ',
+        tone: 'inbound',
+        highlight: ['child-channel', 'pipeline'],
+        methods: ['allocHandle.reset(config)', 'doReadBytes(byteBuf) + allocHandle.continueReading()', 'continueReading() 受 maxMessagesPerRead 与分配器策略控制', 'pipeline.fireChannelRead(msg)'],
+        anim: [
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'read-continue',
+        title: '读循环：continueReading 判定',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ',
+        tone: 'inbound',
+        highlight: ['child-channel'],
+        methods: ['continueReading() 受 RecvByteBufAllocator 与 maxMessagesPerRead 控制', '达到上限或无可读字节则退出本轮读循环'],
+        anim: []
+      },
+      {
+        id: 'tls-decrypt-read',
+        title: 'TLS：解密后再进入业务解码',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (TLS)',
+        key: 'OP_READ',
+        tone: 'inbound',
+        branch: 'tls',
+        scope: 'branch',
+        highlight: ['child-channel', 'pipeline', 'handler-1'],
+        methods: ['Socket 读到的是 TLS Record，不是明文业务包', 'SslHandler.decode()/unwrap() 解密后 fireChannelRead(plaintext)', '明文 ByteBuf 再交给 ByteToMessageDecoder 做拆包'],
+        anim: [
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' },
+          { from: 'pipeline', to: 'handler-1', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'decode-boundary',
+        title: '解码边界：半包累计与粘包拆分',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ',
+        tone: 'inbound',
+        highlight: ['pipeline', 'handler-1'],
+        methods: ['ByteToMessageDecoder.channelRead() 先 cumulate 累积半包', 'callDecode(...) 循环解码，粘包可拆分为多条消息', '可读字节不足时退出，等待下一批数据继续'],
+        anim: [
+          { from: 'pipeline', to: 'handler-1', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'bytebuf-lifecycle',
+        title: 'ByteBuf 生命周期：交接与释放责任',
+        thread: 'Worker / 业务线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ',
+        tone: 'inbound',
+        highlight: ['child-channel', 'pipeline', 'handler-2', 'tail-context'],
+        methods: ['unsafe.read() 生成 ByteBuf 后通过 fireChannelRead(msg) 交给下游', '业务消费后需 release(msg)；若跨线程缓存需 retain()', '若业务截留消息且不 release 会泄漏；仅当消息继续传到 TailContext 时才会兜底 release（默认 DEBUG 日志）'],
+        anim: [
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' },
+          { from: 'pipeline', to: 'handler-2', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'read-complete',
+        title: 'readComplete 与 autoRead 判定',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ',
+        tone: 'inbound',
+        highlight: ['pipeline', 'child-channel'],
+        methods: ['allocHandle.readComplete()', 'pipeline.fireChannelReadComplete()', '!autoRead 且 !readPending 时 finally 分支 removeReadOp()'],
+        anim: [
+          { from: 'pipeline', to: 'tail-context', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'halfclose-fin-eof',
+        title: '半关闭：对端 FIN 导致 read 返回 EOF',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (INPUT EOF)',
+        key: 'OP_READ -> EOF',
+        tone: 'inbound',
+        branch: 'halfclose',
+        scope: 'branch',
+        highlight: ['worker-selector', 'child-channel', 'pipeline'],
+        methods: ['processSelectedKey() -> unsafe.read()', 'doReadBytes(...) < 0 时标记 close=true', 'NioByteUnsafe.closeOnRead(pipeline) 进入半关闭/关闭分支决策'],
+        anim: [
+          { from: 'worker-selector', to: 'child-channel', tone: 'inbound' },
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'halfclose-read-exception',
+        title: '读异常：closeOnRead 分支',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (READ ERROR)',
+        key: 'OP_READ',
+        tone: 'inbound',
+        branch: 'halfclose',
+        scope: 'branch',
+        highlight: ['child-channel', 'pipeline'],
+        methods: ['read 过程中 IOException / OOME 等异常', 'handleReadException(...) -> closeOnRead(pipeline)', 'allowHalfClosure 决定半关闭或直接 close'],
+        anim: [
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'halfclose-input-shutdown-event',
+        title: '半关闭：输入侧 shutdown 与事件传播',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (HALF-CLOSED)',
+        key: '-',
+        tone: 'inbound',
+        branch: 'halfclose',
+        scope: 'branch',
+        highlight: ['child-channel', 'pipeline', 'handler-1'],
+        methods: ['allowHalfClosure=true 时 shutdownInput() 并 fireUserEventTriggered(ChannelInputShutdownEvent)', 'ByteToMessageDecoder.userEventTriggered(...) 会走 channelInputClosed(ctx, false)', '解码器可在 decodeLast(...) 中处理最后残留字节'],
+        anim: [
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' },
+          { from: 'pipeline', to: 'handler-1', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'halfclose-read-ready-again',
+        title: '半关闭：再次触发读就绪（第二次读循环）',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (HALF-CLOSED)',
+        key: 'OP_READ',
+        tone: 'inbound',
+        branch: 'halfclose',
+        scope: 'branch',
+        highlight: ['worker-selector', 'child-channel'],
+        methods: ['输入已 shutdown 后再次 select 命中 OP_READ', '进入 unsafe.read() 进行第二次读循环'],
+        anim: [
+          { from: 'worker-selector', to: 'child-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'halfclose-read-loop-again',
+        title: '半关闭：第二次 read() 触发 readComplete',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (HALF-CLOSED)',
+        key: 'OP_READ',
+        tone: 'inbound',
+        branch: 'halfclose',
+        scope: 'branch',
+        highlight: ['child-channel', 'pipeline'],
+        methods: ['doReadBytes 返回 EOF(<0)，readComplete() & fireChannelReadComplete()', '随后 closeOnRead(pipeline) 触发 ChannelInputShutdownReadComplete，finally 视 autoRead/readPending 可能 removeReadOp()'],
+        anim: [
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'halfclose-read-complete-event',
+        title: '半关闭：后续读触发 ChannelInputShutdownReadComplete',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (HALF-CLOSED)',
+        key: '-',
+        tone: 'inbound',
+        branch: 'halfclose',
+        scope: 'branch',
+        highlight: ['worker-selector', 'pipeline', 'tail-context'],
+        methods: ['第二次 readComplete 之后，closeOnRead() 会发布 ChannelInputShutdownReadComplete', '若 allowHalfClosure=false，则首次 EOF 即 close(voidPromise())，不会进入半关闭事件链', '业务可在 userEventTriggered 中区分 FIN 半关闭与完全关闭策略'],
+        anim: [
+          { from: 'worker-selector', to: 'pipeline', tone: 'inbound' },
+          { from: 'pipeline', to: 'tail-context', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'idle-schedule',
+        title: '心跳：IdleStateHandler 安排超时任务',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'inbound',
+        branch: 'idle',
+        scope: 'branch',
+        highlight: ['pipeline', 'scheduled-queue', 'task-queue'],
+        methods: ['IdleStateHandler.initialize() 按配置创建 Reader/Writer/AllIdleTimeoutTask', '超时任务进入 EventLoop 的 scheduledTaskQueue', '到期后搬运到 taskQueue 执行'],
+        anim: [
+          { from: 'pipeline', to: 'scheduled-queue', tone: 'inbound' },
+          { from: 'scheduled-queue', to: 'task-queue', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'idle-event',
+        title: '心跳：触发 IdleStateEvent',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'inbound',
+        branch: 'idle',
+        scope: 'branch',
+        highlight: ['task-queue', 'pipeline', 'handler-3'],
+        methods: ['IdleTimeoutTask 到期后调用 channelIdle(ctx, evt)', '默认实现 fireUserEventTriggered(IdleStateEvent)', '事件沿入站链到业务 handler.userEventTriggered(...)'],
+        anim: [
+          { from: 'task-queue', to: 'pipeline', tone: 'inbound' },
+          { from: 'pipeline', to: 'handler-3', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'idle-action',
+        title: '心跳：业务侧发送 ping 或关闭连接',
+        thread: '业务线程 / Worker 线程',
+        channel: 'ACTIVE 或 INACTIVE',
+        key: '可触发 OP_WRITE',
+        tone: 'outbound',
+        branch: 'idle',
+        scope: 'branch',
+        highlight: ['handler-3', 'head-context', 'child-channel'],
+        methods: ['收到 READER_IDLE/WRITER_IDLE/ALL_IDLE 后按策略处理', '可 writeAndFlush(heartbeat) 保活，也可 close() 回收僵尸连接', '关闭时仍遵循 close -> inactive -> unregistered 时序'],
+        anim: [
+          { from: 'handler-3', to: 'head-context', tone: 'outbound' },
+          { from: 'head-context', to: 'child-channel', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'inbound',
+        title: 'Inbound Handler 链传播',
+        thread: 'Worker → 业务线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ',
+        chain: 'inbound',
+        methods: ['fireChannelRead()', 'AbstractChannelHandlerContext.invokeChannelRead()', '业务 Handler.channelRead()'],
+        anim: [
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' },
+          { from: 'pipeline', to: 'handler-1', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'outbound',
+        title: '出站：write 仅入队',
+        thread: '业务线程 → Worker 线程',
+        channel: 'ACTIVE',
+        key: '-',
+        chain: 'outbound',
+        methods: ['ctx.write(msg) -> findContextOutbound() -> AbstractUnsafe.write()', 'write 仅入队，不触发 I/O', '消息暂存于 ChannelOutboundBuffer（先入队，未必立刻写 socket）'],
+        anim: [
+          { from: 'handler-1', to: 'pipeline', tone: 'outbound' },
+          { from: 'pipeline', to: 'worker-selector', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'outbound-flush',
+        title: '出站：flush 驱动发送',
+        thread: '业务线程 → Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_WRITE（仅写不完时）',
+        chain: 'outbound',
+        methods: ['ctx.flush() -> AbstractUnsafe.flush0()', '必要时 doWrite() 写 socket', '写不完时会注册 OP_WRITE 等待可写事件'],
+        anim: [
+          { from: 'handler-1', to: 'pipeline', tone: 'outbound' },
+          { from: 'pipeline', to: 'worker-selector', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'tls-close-notify',
+        title: 'TLS：close_notify 与关闭完成事件',
+        thread: '业务线程 / Worker 线程',
+        channel: 'ACTIVE -> CLOSING',
+        key: '可触发 OP_WRITE',
+        tone: 'outbound',
+        branch: 'tls',
+        scope: 'branch',
+        highlight: ['handler-4', 'head-context', 'child-channel', 'pipeline'],
+        methods: ['SslHandler.closeOutbound() 发送 TLS close_notify（不直接关闭 Channel）', '可通过 sslCloseFuture()/SslCloseCompletionEvent 观察 TLS 关闭结果', '通常再配合 channel.close()/ctx.close() 完成传输层关闭'],
+        anim: [
+          { from: 'handler-4', to: 'head-context', tone: 'outbound' },
+          { from: 'head-context', to: 'child-channel', tone: 'outbound' },
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'write-buffer',
+        title: '写路径细化：入队与 flush 边界',
+        thread: '业务线程 → Worker 线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'outbound',
+        branch: 'write',
+        scope: 'branch',
+        highlight: ['handler-2', 'pipeline', 'head-context'],
+        methods: ['write() 触发 ChannelOutboundBuffer.addMessage(...)', 'flush() 阶段 addFlush() 后进入 flushedEntry', '尚未真正写 socket 前仍在内存队列'],
+        anim: [
+          { from: 'handler-2', to: 'pipeline', tone: 'outbound' },
+          { from: 'pipeline', to: 'head-context', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'write-flush0',
+        title: '写路径细化：flush0 -> doWrite',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'outbound',
+        branch: 'write',
+        scope: 'branch',
+        highlight: ['head-context', 'child-channel'],
+        methods: ['AbstractUnsafe.flush0()', 'doWrite(ChannelOutboundBuffer)', 'writeSpinCount 限制本轮 doWrite 尝试次数'],
+        anim: [
+          { from: 'head-context', to: 'child-channel', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'write-spin-exhausted',
+        title: '写路径细化：writeSpinCount 用尽',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'outbound',
+        branch: 'write',
+        scope: 'branch',
+        highlight: ['child-channel'],
+        methods: ['doWrite 按 writeSpinCount 尝试写出', '仍写不完则进入 incompleteWrite(...)'],
+        anim: []
+      },
+      {
+        id: 'write-incomplete',
+        title: '写路径细化：写不完触发 OP_WRITE',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_WRITE',
+        tone: 'outbound',
+        branch: 'write',
+        scope: 'branch',
+        highlight: ['child-channel', 'worker-selector'],
+        methods: ['incompleteWrite(true)', 'setOpWrite() 注册 OP_WRITE', '等待 selector 下次可写通知'],
+        anim: [
+          { from: 'child-channel', to: 'worker-selector', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'write-ready',
+        title: '写路径细化：OP_WRITE 就绪回调',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_WRITE',
+        tone: 'outbound',
+        branch: 'write',
+        scope: 'branch',
+        highlight: ['worker-selector', 'child-channel'],
+        methods: ['NioEventLoop.processSelectedKey()', 'readyOps 命中 OP_WRITE', 'unsafe.forceFlush() 继续冲刷队列'],
+        anim: [
+          { from: 'worker-selector', to: 'child-channel', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'write-drained',
+        title: '写路径细化：队列清空并清除 OP_WRITE',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'outbound',
+        branch: 'write',
+        scope: 'branch',
+        highlight: ['child-channel', 'head-context'],
+        methods: ['ChannelOutboundBuffer.removeBytes(...)', '消息写完后 clearOpWrite()', 'Promise complete 并释放背压'],
+        anim: [
+          { from: 'child-channel', to: 'head-context', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'bp-high-water',
+        title: '背压流控：超过高水位变为不可写',
+        thread: '业务线程 / Worker 线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'outbound',
+        branch: 'backpressure',
+        scope: 'branch',
+        highlight: ['handler-3', 'pipeline', 'head-context'],
+        methods: ['incrementPendingOutboundBytes(size) 累积 pendingOutboundBytes', 'totalPendingBytes > WRITE_BUFFER_HIGH_WATER_MARK', 'pipeline.fireChannelWritabilityChanged()'],
+        anim: [
+          { from: 'handler-3', to: 'pipeline', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'bp-disable-autoread',
+        title: '背压流控：关闭 autoRead 保护内存',
+        thread: '业务线程',
+        channel: 'ACTIVE (UNWRITABLE)',
+        key: '取消 OP_READ',
+        tone: 'inbound',
+        branch: 'backpressure',
+        scope: 'branch',
+        highlight: ['handler-4', 'child-channel', 'worker-selector'],
+        methods: ['channelWritabilityChanged()', '（示例策略）业务侧可调用 channel.config().setAutoRead(false)', 'setAutoRead(false) 会收敛 OP_READ；若正处读循环，finally 分支在 !autoRead 且 !readPending 时 removeReadOp()'],
+        anim: [
+          { from: 'handler-4', to: 'child-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'bp-drain-current-read',
+        title: '背压流控：当前读循环仍可完成',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (UNWRITABLE)',
+        key: 'OP_READ -> -',
+        tone: 'inbound',
+        branch: 'backpressure',
+        scope: 'branch',
+        highlight: ['child-channel', 'pipeline'],
+        methods: ['setAutoRead(false) 不会中断已在进行的 read', '本轮仍可能 fireChannelRead/readComplete，随后 finally 移除 OP_READ'],
+        anim: [
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'bp-manual-read',
+        title: '背压流控：手动 read() 拉取一批数据',
+        thread: '业务线程 / Worker 线程',
+        channel: 'ACTIVE (UNWRITABLE)',
+        key: '临时挂回 OP_READ',
+        tone: 'inbound',
+        branch: 'backpressure',
+        scope: 'branch',
+        highlight: ['handler-2', 'child-channel', 'worker-selector'],
+        methods: ['业务侧按需调用 channel.read()', 'HeadContext.read() -> unsafe.beginRead()', 'doBeginRead() 将 OP_READ 重新加入 interestOps'],
+        anim: [
+          { from: 'handler-2', to: 'child-channel', tone: 'inbound' },
+          { from: 'child-channel', to: 'worker-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'bp-manual-read-complete',
+        title: '背压流控：单次读完成后再次收敛',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (UNWRITABLE)',
+        key: 'OP_READ -> -',
+        tone: 'inbound',
+        branch: 'backpressure',
+        scope: 'branch',
+        highlight: ['worker-selector', 'child-channel', 'pipeline'],
+        methods: ['unsafe.read() 执行本次读循环', 'pipeline.fireChannelRead / fireChannelReadComplete', '!autoRead 且 readPending=false 时再次 removeReadOp()'],
+        anim: [
+          { from: 'worker-selector', to: 'child-channel', tone: 'inbound' },
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'bp-drain',
+        title: '背压流控：继续 flush 消化积压',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_WRITE（必要时）',
+        tone: 'outbound',
+        branch: 'backpressure',
+        scope: 'branch',
+        highlight: ['head-context', 'worker-selector'],
+        methods: ['flush0()/doWrite() 持续发送', 'pendingOutboundBytes 逐步下降', '期间可能依赖 OP_WRITE 继续写'],
+        anim: [
+          { from: 'head-context', to: 'worker-selector', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'bp-low-water',
+        title: '背压流控：低于低水位恢复可写',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE (WRITABLE)',
+        key: '-',
+        tone: 'outbound',
+        branch: 'backpressure',
+        scope: 'branch',
+        highlight: ['worker-selector', 'pipeline'],
+        methods: ['decrementPendingOutboundBytes(size) 降低 pendingOutboundBytes', 'totalPendingBytes < WRITE_BUFFER_LOW_WATER_MARK', '再次 fireChannelWritabilityChanged()'],
+        anim: [
+          { from: 'worker-selector', to: 'pipeline', tone: 'outbound' }
+        ]
+      },
+      {
+        id: 'bp-enable-autoread',
+        title: '背压流控：恢复 autoRead',
+        thread: '业务线程 / Worker 线程',
+        channel: 'ACTIVE',
+        key: '重新关注 OP_READ',
+        tone: 'inbound',
+        branch: 'backpressure',
+        scope: 'branch',
+        highlight: ['handler-1', 'child-channel'],
+        methods: ['channel.config().setAutoRead(true)', 'DefaultChannelConfig.setAutoRead(true) -> channel.read()', '读事件恢复，吞吐回升'],
+        anim: [
+          { from: 'handler-1', to: 'child-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'task-submit',
+        title: '任务调度：业务提交普通任务',
+        thread: '业务线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'inbound',
+        branch: 'taskloop',
+        scope: 'branch',
+        highlight: ['handler-2', 'task-queue'],
+        methods: ['channel.eventLoop().execute(task)', 'SingleThreadEventExecutor.addTask(...)', '必要时 wakeup(selector)'],
+        anim: [
+          { from: 'handler-2', to: 'task-queue', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'task-io-phase',
+        title: '任务调度：I/O 阶段与任务配比',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ/OP_WRITE',
+        tone: 'inbound',
+        branch: 'taskloop',
+        scope: 'branch',
+        highlight: ['worker-selector', 'task-queue'],
+        methods: ['strategy > 0 时先 processSelectedKeys() 再 runAllTasks(...)', '无 I/O 就绪且 ioRatio != 100 时会走 runAllTasks(0)', 'ioRatio 控制 I/O 与任务时间片'],
+        anim: [
+          { from: 'worker-selector', to: 'task-queue', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'task-scheduled',
+        title: '任务调度：定时任务入队',
+        thread: '业务线程 / Worker 线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'inbound',
+        branch: 'taskloop',
+        scope: 'branch',
+        highlight: ['scheduled-queue', 'task-queue'],
+        methods: ['channel.eventLoop().schedule(...) 进入 scheduledTaskQueue', '到期后 fetchFromScheduledTaskQueue()', '转移到 taskQueue 等待执行'],
+        anim: [
+          { from: 'scheduled-queue', to: 'task-queue', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'task-tail',
+        title: '任务调度：尾任务执行',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'inbound',
+        branch: 'taskloop',
+        scope: 'branch',
+        highlight: ['task-queue', 'tail-task'],
+        methods: ['runAllTasks() 结束后 afterRunningAllTasks()', 'SingleThreadEventLoop.runAllTasksFrom(tailTasks)', '用于本轮 I/O 后收尾逻辑'],
+        anim: [
+          { from: 'task-queue', to: 'tail-task', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'shutdown-request',
+        title: '停机：发起 shutdownGracefully',
+        thread: '主线程 / 管理线程',
+        channel: '-',
+        key: '-',
+        tone: 'inbound',
+        branch: 'shutdown',
+        scope: 'branch',
+        highlight: ['bootstrap', 'boss-group', 'worker-group'],
+        methods: ['bossGroup.shutdownGracefully(quietPeriod, timeout)', 'workerGroup.shutdownGracefully(quietPeriod, timeout)', '返回 terminationFuture() 可异步等待结束'],
+        anim: [
+          { from: 'bootstrap', to: 'boss-group', tone: 'inbound' },
+          { from: 'bootstrap', to: 'worker-group', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'shutdown-quiet-period',
+        title: '停机：进入 quietPeriod 观测窗口',
+        thread: 'Boss/Worker EventLoop 线程',
+        channel: '-',
+        key: '-',
+        tone: 'inbound',
+        branch: 'shutdown',
+        scope: 'branch',
+        highlight: ['task-queue', 'scheduled-queue', 'tail-task'],
+        methods: ['SingleThreadEventExecutor.confirmShutdown() 会持续 runAllTasks()', 'quietPeriod 内若仍有新任务进入，则继续延后退出', '超过 timeout 或 quietPeriod 满足后才允许终止'],
+        anim: [
+          { from: 'scheduled-queue', to: 'task-queue', tone: 'inbound' },
+          { from: 'task-queue', to: 'tail-task', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'shutdown-close-all',
+        title: '停机：关闭剩余 Channel 与 SelectionKey',
+        thread: 'Boss/Worker EventLoop 线程',
+        channel: 'ACTIVE -> INACTIVE',
+        key: '取消兴趣并注销',
+        tone: 'inbound',
+        branch: 'shutdown',
+        scope: 'branch',
+        highlight: ['boss-selector', 'worker-selector', 'child-channel', 'server-channel'],
+        methods: ['NioEventLoop.run() 在 isShuttingDown() 分支调用 closeAll()', 'closeAll() 遍历 selector.keys() 并关闭所有附着的 Channel', '通道后续触发 inactive/unregistered 完成收尾'],
+        anim: [
+          { from: 'boss-selector', to: 'server-channel', tone: 'inbound' },
+          { from: 'worker-selector', to: 'child-channel', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'shutdown-terminated',
+        title: '停机：terminationFuture 完成',
+        thread: '主线程 / 管理线程',
+        channel: 'UNREGISTERED',
+        key: '-',
+        tone: 'inbound',
+        branch: 'shutdown',
+        scope: 'branch',
+        highlight: ['boss-group', 'worker-group'],
+        methods: ['全部 EventLoop 终止后 MultiThreadEventExecutorGroup.terminationFuture() 成功', '此时不再接收新任务，新增提交会走拒绝策略', '应用可继续释放业务资源并退出进程'],
+        anim: [
+          { from: 'worker-group', to: 'boss-group', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'decode-exception',
+        title: '解码异常：DecoderException / TooLongFrameException',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE',
+        key: 'OP_READ',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'branch',
+        highlight: ['pipeline', 'handler-1', 'handler-4', 'tail-context'],
+        methods: ['ByteToMessageDecoder.channelRead() 中 decode 抛异常会透传/封装为 DecoderException', 'LengthFieldBasedFrameDecoder 超长帧触发 TooLongFrameException；failFast=true 提前抛，false 丢弃完再抛', '异常沿 exceptionCaught 链传播，业务决定丢弃、告警或关闭连接'],
+        anim: [
+          { from: 'pipeline', to: 'handler-4', tone: 'inbound' },
+          { from: 'handler-4', to: 'tail-context', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'tls-handshake-failure',
+        title: 'TLS：握手失败与失败事件',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE -> CLOSING',
+        key: '-',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'branch',
+        highlight: ['pipeline', 'child-channel', 'handler-4'],
+        methods: ['握手阶段异常会进入 SslHandler.setHandshakeFailure(...)', 'handshakeFuture() 失败，业务可通过 SslHandshakeCompletionEvent(cause) 感知失败原因', '常见策略是关闭连接并进入 inactive/unregistered 回收路径'],
+        anim: [
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' },
+          { from: 'pipeline', to: 'handler-4', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'exception-close',
+        title: 'exceptionCaught 触发关闭',
+        thread: '业务线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'branch',
+        highlight: ['handler-3', 'handler-4', 'tail-context'],
+        methods: ['exceptionCaught()', 'ctx.close()', 'close() -> unsafe.close()', '可发生于读/写任意阶段'],
+        anim: [
+          { from: 'handler-3', to: 'handler-4', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'exception-tail-fallback',
+        title: '异常兜底：传播到 TailContext',
+        thread: 'Worker / 业务线程',
+        channel: 'ACTIVE',
+        key: '-',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'branch',
+        highlight: ['handler-4', 'pipeline', 'tail-context'],
+        methods: ['handler.exceptionCaught(...) 未消费时继续 ctx.fireExceptionCaught(cause)', '异常沿 pipeline 入站链传播到 TailContext.exceptionCaught(...)', 'DefaultChannelPipeline.onUnhandledInboundException(...) 记录兜底告警', '该兜底路径默认不主动 close，是否关闭取决于业务策略'],
+        anim: [
+          { from: 'handler-4', to: 'pipeline', tone: 'inbound' },
+          { from: 'pipeline', to: 'tail-context', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'close-sequence',
+        title: '关闭时序（已注册 Channel）：close -> channelInactive -> channelUnregistered',
+        thread: '业务线程 / Worker 线程',
+        channel: 'ACTIVE -> INACTIVE',
+        key: '-',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'branch',
+        highlight: ['handler-4', 'head-context', 'child-channel', 'worker-selector'],
+        methods: ['ctx.close() 走到 HeadContext.close() -> unsafe.close()', 'close() 完成 doClose 后进入 fireChannelInactiveAndDeregister(...)（closeExecutor/inFlush0 分支会先 invokeLater，普通分支直接调用）', 'fireChannelInactiveAndDeregister(...) 会进入 deregister(..., fireChannelInactive)；在 registered=true 场景下会 invokeLater(...) 延迟 doDeregister', '因此（已注册 Channel）fireChannelInactive()/fireChannelUnregistered() 会延迟到后续 EventLoop 任务触发，而非在 close() 调用点同步触发'],
+        anim: [
+          { from: 'handler-4', to: 'head-context', tone: 'outbound' },
+          { from: 'head-context', to: 'child-channel', tone: 'outbound' },
+          { from: 'child-channel', to: 'worker-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'close-delayed',
+        title: '关闭时序：invokeLater 延迟触发',
+        thread: 'Worker 线程',
+        channel: 'ACTIVE -> INACTIVE',
+        key: '-',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'branch',
+        highlight: ['worker-selector', 'child-channel'],
+        methods: ['closeExecutor 或 inFlush0 时通过 invokeLater 延迟 fireChannelInactive/Unregistered', '事件在后续 EventLoop 任务中触发'],
+        anim: [
+          { from: 'child-channel', to: 'worker-selector', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'close-shortcircuit',
+        title: '关闭短路：未注册/重复 close',
+        thread: 'Worker 线程',
+        channel: 'UNREGISTERED 或 CLOSED',
+        key: '-',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'branch',
+        highlight: ['child-channel'],
+        methods: ['若未 registered 或 close 已发起，promise 直接完成', '该分支不触发 inactive/unregistered，流程到此结束'],
+        anim: []
+      },
+      {
+        id: 'channel-inactive',
+        title: 'channelInactive 回调传播',
+        thread: 'Worker 线程',
+        channel: 'INACTIVE',
+        key: '-',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'branch',
+        highlight: ['child-channel', 'head-context', 'tail-context'],
+        methods: ['该事件通常在 deregister 的 invokeLater 延迟任务中触发', 'fireChannelInactive()', 'AbstractChannelHandlerContext.invokeChannelInactive() 沿入站链传播', '仅在 channel 从 active 变为 inactive 时触发'],
+        anim: [
+          { from: 'child-channel', to: 'pipeline', tone: 'inbound' }
+        ]
+      },
+      {
+        id: 'deregister',
+        title: 'deregister 与 channelUnregistered 回调',
+        thread: 'Worker 线程',
+        channel: 'UNREGISTERED',
+        key: '-',
+        tone: 'inbound',
+        branch: 'exception',
+        scope: 'branch',
+        highlight: ['worker-selector'],
+        methods: ['deregister() 会 invokeLater(...) 延迟执行', '延迟任务中先 doDeregister()，再在 channelInactive 之后触发 channelUnregistered', '用于避免在当前入站回调栈中重入触发新的入站事件'],
+        anim: [
+          { from: 'child-channel', to: 'worker-selector', tone: 'inbound' }
+        ]
+      }
+    ];
+
+    const stepById = new Map(steps.map(step => [step.id, step]));
+
+    const nodeDescriptions = {
+      bootstrap: 'Netty 服务端入口，负责注入 Boss/Worker Group、Channel 类型和 childHandler。',
+      'client-bootstrap': 'Netty 客户端入口，配置 EventLoopGroup、Channel 类型与 handler。',
+      'boss-group': 'Boss NioEventLoopGroup 专门监听连接建立事件，避免业务处理阻塞 accept。',
+      'server-channel': '服务端监听 Channel，承载 bind/register 与连接接入的生命周期。',
+      'boss-selector': 'Boss 侧 Selector 只关注 OP_ACCEPT，在连接到达时唤醒。',
+      accept: '执行 accept() 创建 child channel，并把后续注册任务交给 Acceptor。',
+      acceptor: 'ServerBootstrapAcceptor 负责 child 参数配置、pipeline 注入与 worker 注册。',
+      'worker-group': 'Worker NioEventLoopGroup 负责 child channel 的 I/O 读写与任务执行；默认业务 Handler 也在此线程执行。',
+      'worker-selector': 'Worker Selector 关注 OP_READ / OP_WRITE / OP_CONNECT，驱动读写与连接事件。',
+      connect: '客户端发起 connect，OP_CONNECT 就绪后 finishConnect 并进入 active。',
+      'child-channel': 'NioSocketChannel（服务端 child 或客户端连接），生命周期由 Worker 管理。',
+      'head-context': 'Pipeline 头节点，承接 outbound 调用并最终落到底层 socket 写操作。',
+      'tail-context': 'Pipeline 尾节点，兜底处理未被消费的 inbound 事件。',
+      pipeline: 'ChannelPipeline 是双向责任链，串联 codec、业务处理器和异常传播路径。',
+      'task-queue': 'SingleThreadEventExecutor 的主任务队列，execute() 与已到期定时任务都会进入这里。',
+      'scheduled-queue': '定时任务队列，任务到期后通过 fetchFromScheduledTaskQueue() 搬运到 taskQueue。',
+      'tail-task': 'EventLoop 迭代尾任务队列，在 afterRunningAllTasks() 阶段统一执行。',
+      'handler-1': '业务处理器 A：典型用于解码后首层校验或鉴权（示例中绑定 EventExecutorGroup；同一 Channel 默认固定一个子 executor）。',
+      'handler-2': '业务处理器 B：承接业务编排，继续传播 inbound/outbound 事件（示例中绑定 EventExecutorGroup；同一 Channel 默认固定一个子 executor）。',
+      'handler-3': '业务处理器 C：常见于聚合、路由或异步任务分发（示例中绑定 EventExecutorGroup；同一 Channel 默认固定一个子 executor）。',
+      'handler-4': '业务处理器 D：末端业务处理或统一异常关闭策略（示例中绑定 EventExecutorGroup；同一 Channel 默认固定一个子 executor）。'
+    };
+
+    const scenarioMeta = {
+      normal: { label: '正常流程', tags: ['启动到出站'], className: '' },
+      startup: { label: '启动到 OP_ACCEPT 注册', tags: ['ServerSocketChannel', 'OP_ACCEPT'], className: '' },
+      exception: { label: '异常与回收', tags: ['多分支示例'], className: 'exception' },
+      write: { label: '写路径细化', tags: ['OP_WRITE'], className: '' },
+      backpressure: { label: '背压流控', tags: ['高低水位'], className: '' },
+      taskloop: { label: 'EventLoop 任务调度', tags: [], className: '' },
+      'tls-success': { label: 'TLS 握手成功', tags: ['握手成功'], className: '' },
+      'tls-timeout': { label: 'TLS 握手超时', tags: ['握手超时'], className: 'exception' },
+      idle: { label: '心跳超时', tags: ['IdleState'], className: '' },
+      shutdown: { label: '优雅停机', tags: ['shutdownGracefully'], className: '' },
+      halfclose: { label: '半关闭与 FIN', tags: ['allowHalfClosure'], className: '' },
+      client: { label: '客户端连接', tags: ['NIO'], className: '' }
+    };
+
+    // Explicit scenario order to avoid cross-branch interleaving.
+    const scenarioStepOrder = {
+      normal: null,
+      startup: [
+        'startup-config',
+        'startup-init-channel',
+        'startup-register-submit',
+        'startup-register0',
+        'startup-fire-registered',
+        'startup-bind',
+        'startup-active',
+        'startup-begin-read',
+        'startup-do-begin-read',
+        'startup-op-accept-registered'
+      ],
+      exception: [
+        'bootstrap',
+        'register-boss',
+        'bind-active',
+        'accept-ready',
+        'accept',
+        'acceptor',
+        'acceptor-backoff',
+        'child-register-failed',
+        'register-child',
+        'pipeline-init',
+        'pipeline-executor',
+        'child-registered',
+        'child-active',
+        'tls-handshake-start',
+        'tls-handshake-failure',
+        'read-ready',
+        'read-loop',
+        'read-continue',
+        'decode-boundary',
+        'decode-exception',
+        'exception-tail-fallback',
+        'exception-close',
+        'close-sequence',
+        'close-delayed',
+        'close-shortcircuit',
+        'channel-inactive',
+        'deregister'
+      ],
+      'tls-success': [
+        'bootstrap',
+        'register-boss',
+        'bind-active',
+        'accept-ready',
+        'accept',
+        'acceptor',
+        'register-child',
+        'pipeline-init',
+        'pipeline-executor',
+        'child-registered',
+        'child-active',
+        'tls-starttls',
+        'tls-handshake-start',
+        'tls-handshake-success',
+        'read-ready',
+        'read-loop',
+        'read-continue',
+        'tls-decrypt-read',
+        'decode-boundary',
+        'bytebuf-lifecycle',
+        'read-complete',
+        'outbound',
+        'outbound-flush',
+        'tls-close-notify',
+        'close-sequence',
+        'close-delayed',
+        'channel-inactive',
+        'deregister'
+      ],
+      'tls-timeout': [
+        'bootstrap',
+        'register-boss',
+        'bind-active',
+        'accept-ready',
+        'accept',
+        'acceptor',
+        'register-child',
+        'pipeline-init',
+        'pipeline-executor',
+        'child-registered',
+        'child-active',
+        'tls-starttls',
+        'tls-handshake-start',
+        'tls-handshake-timeout',
+        'close-sequence',
+        'close-delayed',
+        'channel-inactive',
+        'deregister'
+      ],
+      halfclose: [
+        'bootstrap',
+        'register-boss',
+        'bind-active',
+        'accept-ready',
+        'accept',
+        'acceptor',
+        'register-child',
+        'pipeline-init',
+        'pipeline-executor',
+        'child-registered',
+        'child-active',
+        'read-ready',
+        'read-loop',
+        'read-continue',
+        'halfclose-fin-eof',
+        'halfclose-read-exception',
+        'halfclose-input-shutdown-event',
+        'halfclose-read-ready-again',
+        'halfclose-read-loop-again',
+        'halfclose-read-complete-event'
+      ],
+      client: [
+        'client-bootstrap',
+        'client-register',
+        'pipeline-init',
+        'pipeline-executor',
+        'client-connect',
+        'client-op-connect',
+        'client-finish-connect',
+        'read-ready',
+        'read-loop',
+        'read-continue',
+        'outbound',
+        'outbound-flush'
+      ],
+      write: [
+        'bootstrap',
+        'register-boss',
+        'bind-active',
+        'accept-ready',
+        'accept',
+        'acceptor',
+        'register-child',
+        'pipeline-init',
+        'pipeline-executor',
+        'child-registered',
+        'child-active',
+        'outbound',
+        'outbound-flush',
+        'write-buffer',
+        'write-flush0',
+        'write-spin-exhausted',
+        'write-incomplete',
+        'write-ready',
+        'write-drained'
+      ],
+      backpressure: [
+        'bootstrap',
+        'register-boss',
+        'bind-active',
+        'accept-ready',
+        'accept',
+        'acceptor',
+        'register-child',
+        'pipeline-init',
+        'pipeline-executor',
+        'child-registered',
+        'child-active',
+        'outbound',
+        'outbound-flush',
+        'bp-high-water',
+        'bp-disable-autoread',
+        'bp-drain-current-read',
+        'bp-manual-read',
+        'bp-manual-read-complete',
+        'bp-drain',
+        'bp-low-water',
+        'bp-enable-autoread'
+      ],
+      taskloop: [
+        'bootstrap',
+        'register-boss',
+        'bind-active',
+        'accept-ready',
+        'accept',
+        'acceptor',
+        'register-child',
+        'pipeline-init',
+        'pipeline-executor',
+        'child-registered',
+        'child-active',
+        'task-submit',
+        'task-io-phase',
+        'task-scheduled',
+        'task-tail'
+      ],
+      idle: [
+        'bootstrap',
+        'register-boss',
+        'bind-active',
+        'accept-ready',
+        'accept',
+        'acceptor',
+        'register-child',
+        'pipeline-init',
+        'pipeline-executor',
+        'child-registered',
+        'child-active',
+        'idle-schedule',
+        'idle-event',
+        'idle-action'
+      ],
+      shutdown: [
+        'bootstrap',
+        'shutdown-request',
+        'shutdown-quiet-period',
+        'shutdown-close-all',
+        'shutdown-terminated'
+      ]
+    };
+
+    const branchTagMap = {
+      exception: ['exception', 'close'],
+      write: ['write'],
+      backpressure: ['backpressure', 'write', 'read'],
+      taskloop: ['task'],
+      tls: ['tls', 'read', 'write'],
+      idle: ['idle'],
+      shutdown: ['shutdown', 'close'],
+      halfclose: ['close', 'read'],
+      client: ['client']
+    };
+
+    const scopeLabels = {
+      branch: '分支',
+      other: '其他连接',
+      client: '客户端'
+    };
+
+    const scopeClass = {
+      branch: 'branch',
+      other: 'other',
+      client: 'client'
+    };
+
+    const filterTagLabels = {
+      read: '读',
+      write: '写',
+      tls: 'TLS',
+      close: '关闭',
+      exception: '异常',
+      backpressure: '背压',
+      task: '任务',
+      idle: '心跳',
+      shutdown: '停机',
+      client: '客户端'
+    };
+
+    const filterTagSet = new Set(
+      filterButtons
+        .map(button => button.dataset.filter)
+        .filter(tag => tag && tag !== 'all')
+    );
+
+    const stepTagCache = new Map();
+
+    function inferStepTags(step) {
+      const tags = new Set();
+      const id = step?.id || '';
+
+      if (step?.tags && Array.isArray(step.tags)) {
+        step.tags.forEach(tag => tags.add(tag));
+      }
+
+      if (step?.branch && branchTagMap[step.branch]) {
+        branchTagMap[step.branch].forEach(tag => tags.add(tag));
+      }
+
+      // 启动细化场景用于展示启动主线，不标注读/写/TLS 等标签。
+      if (step?.branch === 'startup') return [];
+
+      if (id.startsWith('client-')) tags.add('client');
+      if (step?.chain === 'inbound') tags.add('read');
+      if (step?.chain === 'outbound') tags.add('write');
+      if (id.includes('accept')) tags.add('read');
+      if (id.includes('read') || id.includes('decode')) tags.add('read');
+      if (id.includes('write') || id.startsWith('outbound')) tags.add('write');
+      if (id.includes('tls')) tags.add('tls');
+      if (id.includes('shutdown')) tags.add('shutdown');
+      if (id.includes('idle')) tags.add('idle');
+      if (id.includes('task')) tags.add('task');
+      if (id.includes('backpressure') || id.startsWith('bp-')) tags.add('backpressure');
+      if (id.includes('exception') || id.includes('fail') || id.includes('error')) tags.add('exception');
+      if (id.includes('close') || id.includes('inactive') || id.includes('deregister') || id.includes('halfclose')) tags.add('close');
+      if (id.includes('accept') || id.includes('bind') || id.includes('register') || id.includes('bootstrap') || id.includes('pipeline') || id.includes('connect')) {
+        tags.add('core');
+      }
+
+      return Array.from(tags);
+    }
+
+    function getStepTags(step) {
+      if (!step) return [];
+      if (!stepTagCache.has(step.id)) {
+        stepTagCache.set(step.id, inferStepTags(step));
+      }
+      return stepTagCache.get(step.id);
+    }
+
+    function stepMatchesFilters(step) {
+      if (!step) return false;
+      if (step.branch === 'startup') return true;
+      if (!state.filters || state.filters.size === 0) return true;
+      const tags = getStepTags(step);
+      return tags.some(tag => state.filters.has(tag));
+    }
+
+    function syncFilterButtons() {
+      if (!filterButtons.length) return;
+      const hasFilters = state.filters && state.filters.size > 0;
+      filterButtons.forEach(button => {
+        const tag = button.dataset.filter;
+        const active = tag === 'all' ? !hasFilters : state.filters.has(tag);
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+
+    function syncFilterBadges() {
+      const tagElements = Array.from(document.querySelectorAll('[data-filter-tag]'));
+      if (!tagElements.length) return;
+      tagElements.forEach(element => {
+        const tag = element.getAttribute('data-filter-tag');
+        if (!tag) return;
+        const active = state.filters && state.filters.has(tag);
+        element.classList.toggle('active', active);
+        if (element.getAttribute('role') === 'button') {
+          element.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }
+      });
+    }
+
+    function updateFilters(nextTag) {
+      if (!state.filters) state.filters = new Set();
+      if (nextTag === 'all') {
+        state.filters.clear();
+      } else if (state.filters.has(nextTag)) {
+        state.filters.delete(nextTag);
+      } else {
+        state.filters.add(nextTag);
+      }
+      syncFilterButtons();
+      resetState();
+      log('过滤已更新');
+    }
+
+    function validateScenarioOrder() {
+      Object.entries(scenarioStepOrder).forEach(([scenario, order]) => {
+        if (!Array.isArray(order)) return;
+        const unknown = order.filter(id => !stepById.has(id));
+        if (unknown.length) {
+          console.warn(`[scenarioStepOrder] ${scenario} contains unknown step ids: ${unknown.join(', ')}`);
+        }
+      });
+    }
+
+    const scenarioButtons = {
+      normal: els.btnNormal,
+      startup: els.btnStartup,
+      exception: els.btnException,
+      write: els.btnWrite,
+      backpressure: els.btnBackpressure,
+      taskloop: els.btnTaskloop,
+      'tls-success': els.btnTlsSuccess,
+      'tls-timeout': els.btnTlsTimeout,
+      idle: els.btnIdle,
+      shutdown: els.btnShutdown,
+      halfclose: els.btnHalfclose,
+      client: els.btnClient
+    };
+
+    const stepSourceAnchors = {
+      bootstrap: [
+        { symbol: 'ServerBootstrap#group(EventLoopGroup, EventLoopGroup)', location: 'transport/src/main/java/io/netty/bootstrap/ServerBootstrap.java', note: '绑定 boss/worker 线程组' },
+        { symbol: 'AbstractBootstrap#channel(Class)', location: 'transport/src/main/java/io/netty/bootstrap/AbstractBootstrap.java', note: '设置 ServerChannel 类型（如 NioServerSocketChannel）' },
+        { symbol: 'AbstractBootstrap#initAndRegister()', location: 'transport/src/main/java/io/netty/bootstrap/AbstractBootstrap.java', note: '创建并发起注册入口' }
+      ],
+      'startup-config': [
+        { symbol: 'ServerBootstrap#group(EventLoopGroup, EventLoopGroup)', location: 'transport/src/main/java/io/netty/bootstrap/ServerBootstrap.java', note: '配置 boss/worker 线程组' },
+        { symbol: 'ServerBootstrap#childHandler(ChannelHandler)', location: 'transport/src/main/java/io/netty/bootstrap/ServerBootstrap.java', note: '设置子连接 ChannelInitializer' },
+        { symbol: 'AbstractBootstrap#option(ChannelOption, Object)', location: 'transport/src/main/java/io/netty/bootstrap/AbstractBootstrap.java', note: '设置服务端监听参数（SO_BACKLOG 等）' }
+      ],
+      'startup-init-channel': [
+        { symbol: 'AbstractBootstrap#initAndRegister()', location: 'transport/src/main/java/io/netty/bootstrap/AbstractBootstrap.java', note: '创建 Channel 并发起注册' },
+        { symbol: 'ReflectiveChannelFactory#newChannel()', location: 'transport/src/main/java/io/netty/channel/ReflectiveChannelFactory.java', note: '反射创建 NioServerSocketChannel 实例' },
+        { symbol: 'ServerBootstrap#init(Channel)', location: 'transport/src/main/java/io/netty/bootstrap/ServerBootstrap.java', note: '安装服务端初始化器与 Acceptor 安装逻辑' }
+      ],
+      'startup-register-submit': [
+        { symbol: 'MultithreadEventLoopGroup#register(Channel)', location: 'transport/src/main/java/io/netty/channel/MultithreadEventLoopGroup.java', note: '选择 Boss EventLoop 并提交注册' },
+        { symbol: 'SingleThreadEventLoop#register(Channel)', location: 'transport/src/main/java/io/netty/channel/SingleThreadEventLoop.java', note: '包装 promise 并委派到 unsafe.register' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#register(EventLoop, ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '非 EventLoop 线程时通过 execute(...) 异步切换线程' }
+      ],
+      'startup-register0': [
+        { symbol: 'AbstractChannel.AbstractUnsafe#register0(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'Boss 线程内执行真正注册并触发后续事件' },
+        { symbol: 'AbstractNioChannel#doRegister()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: 'javaChannel.register(selector, 0, this) 首次 interestOps=0' },
+        { symbol: 'SelectionKey#interestOps(int)', location: 'JDK NIO', note: '初次注册阶段尚未关注 OP_ACCEPT' }
+      ],
+      'startup-fire-registered': [
+        { symbol: 'DefaultChannelPipeline#invokeHandlerAddedIfNeeded()', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: '补齐 handlerAdded 回调' },
+        { symbol: 'DefaultChannelPipeline#fireChannelRegistered()', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: '传播 channelRegistered 事件' },
+        { symbol: 'ServerBootstrap#init(Channel) -> ch.eventLoop().execute(...)', location: 'transport/src/main/java/io/netty/bootstrap/ServerBootstrap.java', note: 'ServerBootstrapAcceptor 通过异步任务 addLast 到 pipeline' }
+      ],
+      'startup-bind': [
+        { symbol: 'AbstractBootstrap#doBind0(...)', location: 'transport/src/main/java/io/netty/bootstrap/AbstractBootstrap.java', note: '注册完成后在 EventLoop 发起 bind' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#bind(...)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'bind 成功后通过 invokeLater(...) 延迟 fireChannelActive' },
+        { symbol: 'NioServerSocketChannel#doBind(SocketAddress)', location: 'transport/src/main/java/io/netty/channel/socket/nio/NioServerSocketChannel.java', note: '底层 ServerSocketChannel 绑定本地地址' }
+      ],
+      'startup-active': [
+        { symbol: 'AbstractChannel.AbstractUnsafe#bind(...)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'bind 成功后从 inactive 切到 active' },
+        { symbol: 'DefaultChannelPipeline#fireChannelActive()', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: '广播 channelActive 事件' }
+      ],
+      'startup-begin-read': [
+        { symbol: 'DefaultChannelPipeline.HeadContext#channelActive(ChannelHandlerContext)', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: 'active 后按 autoRead 触发 readIfIsAutoRead' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#beginRead()', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'read 入口，进入 doBeginRead' }
+      ],
+      'startup-do-begin-read': [
+        { symbol: 'AbstractNioMessageChannel#doBeginRead()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioMessageChannel.java', note: 'ServerChannel 侧 beginRead 入口' },
+        { symbol: 'AbstractNioChannel#doBeginRead()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: '将 readInterestOp 合并进 key.interestOps' },
+        { symbol: 'AbstractNioChannel#readInterestOp', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: 'ServerChannel 的 readInterestOp=SelectionKey.OP_ACCEPT' }
+      ],
+      'startup-op-accept-registered': [
+        { symbol: 'AbstractNioChannel#doBeginRead()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: 'interestOps |= readInterestOp 完成 OP_ACCEPT 注册' },
+        { symbol: 'SelectionKey#interestOps(int)', location: 'JDK NIO', note: '最终 SelectionKey 关注 OP_ACCEPT' },
+        { symbol: 'NioEventLoop#run()', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: '后续 select 循环将等待 OP_ACCEPT ready' }
+      ],
+      'client-bootstrap': [
+        { symbol: 'Bootstrap#group(EventLoopGroup)', location: 'transport/src/main/java/io/netty/bootstrap/Bootstrap.java', note: '配置客户端 EventLoopGroup' },
+        { symbol: 'AbstractBootstrap#channel(Class)', location: 'transport/src/main/java/io/netty/bootstrap/AbstractBootstrap.java', note: '设置客户端 Channel 类型（如 NioSocketChannel）' },
+        { symbol: 'Bootstrap#handler(ChannelHandler)', location: 'transport/src/main/java/io/netty/bootstrap/Bootstrap.java', note: '配置客户端 pipeline 的 handler/ChannelInitializer' }
+      ],
+      'client-register': [
+        { symbol: 'Bootstrap#doResolveAndConnect(...)', location: 'transport/src/main/java/io/netty/bootstrap/Bootstrap.java', note: 'connect 前调用 initAndRegister() 完成注册' },
+        { symbol: 'AbstractBootstrap#initAndRegister()', location: 'transport/src/main/java/io/netty/bootstrap/AbstractBootstrap.java', note: '创建 Channel 并提交注册任务' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#register0(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '注册完成后触发 fireChannelRegistered()' }
+      ],
+      'client-connect': [
+        { symbol: 'Bootstrap#doResolveAndConnect0(...)', location: 'transport/src/main/java/io/netty/bootstrap/Bootstrap.java', note: '注册完成后发起 doConnect' },
+        { symbol: 'AbstractNioChannel.AbstractNioUnsafe#connect(...)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: '调用 doConnect，未完成时挂 OP_CONNECT' },
+        { symbol: 'NioSocketChannel#doConnect(SocketAddress, SocketAddress)', location: 'transport/src/main/java/io/netty/channel/socket/nio/NioSocketChannel.java', note: '非阻塞 connect，未完成则注册 OP_CONNECT' }
+      ],
+      'client-op-connect': [
+        { symbol: 'NioEventLoop#processSelectedKey(SelectionKey, AbstractNioChannel)', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: 'readyOps 命中 OP_CONNECT 后调用 unsafe.finishConnect()' },
+        { symbol: 'AbstractNioChannel.AbstractNioUnsafe#finishConnect()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: '完成连接并触发 fulfillConnectPromise' }
+      ],
+      'client-finish-connect': [
+        { symbol: 'AbstractNioChannel.AbstractNioUnsafe#finishConnect()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: 'doFinishConnect 后触发 fireChannelActive' },
+        { symbol: 'NioSocketChannel#doFinishConnect()', location: 'transport/src/main/java/io/netty/channel/socket/nio/NioSocketChannel.java', note: '底层 SocketChannel.finishConnect' },
+        { symbol: 'AbstractNioChannel#doBeginRead()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: 'autoRead=true 时关注 OP_READ' }
+      ],
+      'register-boss': [
+        { symbol: 'AbstractBootstrap#initAndRegister()', location: 'transport/src/main/java/io/netty/bootstrap/AbstractBootstrap.java', note: '创建 channel 后调用 group.register(channel)' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#register0(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '真正执行 doRegister() 并绑定 EventLoop' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#register0 -> fireChannelRegistered()', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '向 pipeline 广播 registered 事件' }
+      ],
+      'bind-active': [
+        { symbol: 'AbstractBootstrap#doBind0(...)', location: 'transport/src/main/java/io/netty/bootstrap/AbstractBootstrap.java', note: '在注册完成后提交 bind 任务' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#bind(...)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'doBind 成功后触发 fireChannelActive()' },
+        { symbol: 'AbstractNioChannel#doBeginRead()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: 'autoRead=true 时注册 readInterestOp（ServerChannel 对应 OP_ACCEPT）' }
+      ],
+      'accept-ready': [
+        { symbol: 'NioEventLoop#run()', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: 'select 循环主入口' },
+        { symbol: 'NioEventLoop#processSelectedKeys()', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: '处理已就绪 SelectionKey' },
+        { symbol: 'NioEventLoop#processSelectedKey(SelectionKey, AbstractNioChannel)', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: '命中 OP_ACCEPT/OP_READ/OP_WRITE 分支' }
+      ],
+      accept: [
+        { symbol: 'AbstractNioMessageChannel.NioMessageUnsafe#read()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioMessageChannel.java', note: 'ServerChannel 的 read 驱动 doReadMessages' },
+        { symbol: 'NioServerSocketChannel#doReadMessages(List<Object>)', location: 'transport/src/main/java/io/netty/channel/socket/nio/NioServerSocketChannel.java', note: 'accept socket 并封装为 NioSocketChannel' }
+      ],
+      acceptor: [
+        { symbol: 'ServerBootstrap.ServerBootstrapAcceptor#channelRead(...)', location: 'transport/src/main/java/io/netty/bootstrap/ServerBootstrap.java', note: '向 child pipeline 注入 childHandler 并设置参数' },
+        { symbol: 'ServerBootstrap.ServerBootstrapAcceptor#channelRead -> childGroup.register(child)', location: 'transport/src/main/java/io/netty/bootstrap/ServerBootstrap.java', note: '提交 child channel 到 worker EventLoop' }
+      ],
+      'acceptor-backoff': [
+        { symbol: 'ServerBootstrap.ServerBootstrapAcceptor#exceptionCaught(...)', location: 'transport/src/main/java/io/netty/bootstrap/ServerBootstrap.java', note: 'Acceptor 异常时关闭 autoRead 并走退避' },
+        { symbol: 'DefaultChannelConfig#setAutoRead(boolean)', location: 'transport/src/main/java/io/netty/channel/DefaultChannelConfig.java', note: 'setAutoRead(false) 后暂停继续 accept' },
+        { symbol: 'EventLoop#schedule(Runnable, long, TimeUnit)', location: 'common/src/main/java/io/netty/util/concurrent/AbstractScheduledEventExecutor.java', note: '1 秒后执行 enableAutoReadTask 恢复接入' }
+      ],
+      'child-register-failed': [
+        { symbol: 'ServerBootstrap.ServerBootstrapAcceptor#channelRead(...)', location: 'transport/src/main/java/io/netty/bootstrap/ServerBootstrap.java', note: 'register(child) 失败时由监听器触发回收' },
+        { symbol: 'ServerBootstrap.ServerBootstrapAcceptor#forceClose(Channel, Throwable)', location: 'transport/src/main/java/io/netty/bootstrap/ServerBootstrap.java', note: '失败 child 直接 closeForcibly 并记录告警' }
+      ],
+      'register-child': [
+        { symbol: 'AbstractChannel.AbstractUnsafe#register0(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'child channel 在 worker 线程内完成注册' }
+      ],
+      'pipeline-init': [
+        { symbol: 'DefaultChannelPipeline#invokeHandlerAddedIfNeeded()', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: '首轮注册时统一补齐 handlerAdded 触发' },
+        { symbol: 'ChannelInitializer#initChannel(C)', location: 'transport/src/main/java/io/netty/channel/ChannelInitializer.java', note: 'handler/childHandler 为 ChannelInitializer 时会回调用户实现的 initChannel(Channel)' },
+        { symbol: 'DefaultChannelPipeline#childExecutor(EventExecutorGroup)', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: '选择/固定子 executor 的逻辑' },
+        { symbol: 'ChannelOption#SINGLE_EVENTEXECUTOR_PER_GROUP', location: 'transport/src/main/java/io/netty/channel/ChannelOption.java', note: '控制是否为同一 Channel 固定 executor' }
+      ],
+      'pipeline-executor': [
+        { symbol: 'DefaultChannelPipeline#childExecutor(EventExecutorGroup)', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: '为同一 Channel 选择/固定子 executor' },
+        { symbol: 'ChannelOption#SINGLE_EVENTEXECUTOR_PER_GROUP', location: 'transport/src/main/java/io/netty/channel/ChannelOption.java', note: '默认 true：同一 Channel 固定 executor' }
+      ],
+      'child-registered': [
+        { symbol: 'AbstractChannel.AbstractUnsafe#register0 -> fireChannelRegistered()', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '注册完成后向 pipeline 发 registered 事件' },
+        { symbol: 'DefaultChannelPipeline#fireChannelRegistered()', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: '从 head 开始沿入站链传播' }
+      ],
+      'child-active': [
+        { symbol: 'AbstractChannel.AbstractUnsafe#register0 -> fireChannelActive()', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '首次注册且 active 时触发 active 事件' },
+        { symbol: 'AbstractNioChannel#doBeginRead()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: 'autoRead=true 时关注 OP_READ' }
+      ],
+      'tls-starttls': [
+        { symbol: 'SslHandler#channelActive(ChannelHandlerContext)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: 'startTls=true 时跳过 channelActive 自动握手' },
+        { symbol: 'SslHandler#handlerAdded(ChannelHandlerContext)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: 'startTls 配置影响握手启动时机' }
+      ],
+      'tls-handshake-start': [
+        { symbol: 'SslHandler#channelActive(ChannelHandlerContext)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: 'channel active 后进入握手流程准备（server 通常等待 ClientHello，非 startTls）' },
+        { symbol: 'SslHandler#startHandshakeProcessing(boolean)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '标记握手流程并注册握手超时/回调（client 侧可能主动发起握手）' },
+        { symbol: 'SslHandler#handshakeFuture()', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '业务可监听握手成功或失败' },
+        { symbol: 'SslHandler#setHandshakeTimeoutMillis(long)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '握手超时配置与超时异常路径' }
+      ],
+      'tls-handshake-timeout': [
+        { symbol: 'SslHandler#applyHandshakeTimeout()', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '握手超时调度与异常触发' },
+        { symbol: 'SslHandshakeTimeoutException', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandshakeTimeoutException.java', note: '握手超时异常类型' }
+      ],
+      'tls-handshake-success': [
+        { symbol: 'SslHandler#setHandshakeSuccess()', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '握手成功后更新 promise 与状态' },
+        { symbol: 'SslHandler#setHandshakeSuccess -> fireUserEventTriggered(SslHandshakeCompletionEvent.SUCCESS)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '向 pipeline 广播握手完成事件' }
+      ],
+      'read-ready': [
+        { symbol: 'NioEventLoop#processSelectedKey(SelectionKey, AbstractNioChannel)', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: 'I/O 就绪分发点' },
+        { symbol: 'NioEventLoop#processSelectedKey -> unsafe.read()', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: '命中 OP_READ 后进入 unsafe.read()' }
+      ],
+      'read-loop': [
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#read()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: 'alloc + doReadBytes + fireChannelRead 主循环' },
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#read -> continueReading()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '由 RecvByteBufAllocator 控制读批次' },
+        { symbol: 'RecvByteBufAllocator.Handle#continueReading()', location: 'transport/src/main/java/io/netty/channel/RecvByteBufAllocator.java', note: '继续读取的判定逻辑（含 maxMessagesPerRead）' }
+      ],
+      'read-continue': [
+        { symbol: 'RecvByteBufAllocator.Handle#continueReading()', location: 'transport/src/main/java/io/netty/channel/RecvByteBufAllocator.java', note: '控制是否继续读取' },
+        { symbol: 'ChannelOption#MAX_MESSAGES_PER_READ', location: 'transport/src/main/java/io/netty/channel/ChannelOption.java', note: '单次 read 循环的消息上限配置' }
+      ],
+      'tls-decrypt-read': [
+        { symbol: 'SslHandler#decode(ChannelHandlerContext, ByteBuf, List<Object>)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '识别 TLS Record 并驱动后续解密流程' },
+        { symbol: 'SslHandler#unwrap(ChannelHandlerContext, ByteBuf, int)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '调用 SSLEngine.unwrap 产出明文数据' },
+        { symbol: 'AbstractChannelHandlerContext#fireChannelRead(Object)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '将解密后的明文继续传播到后续解码器/业务 handler' }
+      ],
+      'decode-boundary': [
+        { symbol: 'ByteToMessageDecoder#channelRead(ChannelHandlerContext, Object)', location: 'codec/src/main/java/io/netty/handler/codec/ByteToMessageDecoder.java', note: '解码入口：先合并 cumulation，再进入 decode' },
+        { symbol: 'ByteToMessageDecoder.Cumulator#cumulate(ByteBufAllocator, ByteBuf, ByteBuf)', location: 'codec/src/main/java/io/netty/handler/codec/ByteToMessageDecoder.java', note: '累计半包字节，处理拆包前置条件' },
+        { symbol: 'ByteToMessageDecoder#callDecode(ChannelHandlerContext, ByteBuf, List<Object>)', location: 'codec/src/main/java/io/netty/handler/codec/ByteToMessageDecoder.java', note: '循环解码，可一次产出多条消息（拆粘包）' }
+      ],
+      'bytebuf-lifecycle': [
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#read()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: 'ByteBuf 创建后通过 fireChannelRead 向下游交接' },
+        { symbol: 'AbstractChannelHandlerContext#fireChannelRead(Object)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '消息所有权沿 pipeline 继续传递' },
+        { symbol: 'ReferenceCountUtil#release(Object)', location: 'common/src/main/java/io/netty/util/ReferenceCountUtil.java', note: '消费完成后释放引用计数，避免泄漏' },
+        { symbol: 'ReferenceCountUtil#retain(T)', location: 'common/src/main/java/io/netty/util/ReferenceCountUtil.java', note: '跨线程/异步保留消息时增加引用计数' }
+      ],
+      'read-complete': [
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#read -> readComplete()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '触发 fireChannelReadComplete()' },
+        { symbol: 'AbstractNioChannel.AbstractNioUnsafe#removeReadOp()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: '!autoRead 且无 readPending 时取消读兴趣' }
+      ],
+      'halfclose-fin-eof': [
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#read()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: 'doReadBytes < 0 时标记 EOF 并触发 closeOnRead 分支' },
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#closeOnRead(ChannelPipeline)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '根据 allowHalfClosure 决定半关闭或直接 close' }
+      ],
+      'halfclose-read-exception': [
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#handleReadException(...)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '读异常处理与 closeOnRead 触发点' },
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#closeOnRead(ChannelPipeline)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '读异常时同样进入 closeOnRead 决策' }
+      ],
+      'halfclose-input-shutdown-event': [
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#closeOnRead(ChannelPipeline)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: 'allowHalfClosure=true 时 shutdownInput 并发布 ChannelInputShutdownEvent' },
+        { symbol: 'ByteToMessageDecoder#userEventTriggered(ChannelHandlerContext, Object)', location: 'codec/src/main/java/io/netty/handler/codec/ByteToMessageDecoder.java', note: '收到 ChannelInputShutdownEvent 后触发 decodeLast 路径' },
+        { symbol: 'ByteToMessageDecoder#channelInputClosed(ChannelHandlerContext, boolean)', location: 'codec/src/main/java/io/netty/handler/codec/ByteToMessageDecoder.java', note: '输入关闭时刷出残留字节并按需触发 channelInactive' }
+      ],
+      'halfclose-read-ready-again': [
+        { symbol: 'NioEventLoop#processSelectedKey(SelectionKey, AbstractNioChannel)', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: '再次命中 OP_READ 后进入 unsafe.read()' },
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#read()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '第二次读循环入口' }
+      ],
+      'halfclose-read-loop-again': [
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#read()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: 'readComplete 之后在 closeOnRead 中触发后续事件' },
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#closeOnRead(ChannelPipeline)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '输入已 shutdown 时触发 ChannelInputShutdownReadComplete' }
+      ],
+      'halfclose-read-complete-event': [
+        { symbol: 'ChannelInputShutdownReadComplete', location: 'transport/src/main/java/io/netty/channel/socket/ChannelInputShutdownReadComplete.java', note: '输入已关闭后再次读事件触发的补充用户事件' },
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#closeOnRead(ChannelPipeline)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '二次读路径发布 ChannelInputShutdownReadComplete' }
+      ],
+      'idle-schedule': [
+        { symbol: 'IdleStateHandler#initialize(ChannelHandlerContext)', location: 'handler/src/main/java/io/netty/handler/timeout/IdleStateHandler.java', note: '按超时配置初始化 Reader/Writer/AllIdle 定时任务' },
+        { symbol: 'IdleStateHandler#schedule(ChannelHandlerContext, Runnable, long, TimeUnit)', location: 'handler/src/main/java/io/netty/handler/timeout/IdleStateHandler.java', note: '超时任务提交到 EventLoop 的调度器' },
+        { symbol: 'SingleThreadEventExecutor#fetchFromScheduledTaskQueue()', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '到期任务搬运到 taskQueue 执行' }
+      ],
+      'idle-event': [
+        { symbol: 'IdleStateHandler#channelIdle(ChannelHandlerContext, IdleStateEvent)', location: 'handler/src/main/java/io/netty/handler/timeout/IdleStateHandler.java', note: '默认实现 fireUserEventTriggered(evt)' },
+        { symbol: 'AbstractChannelHandlerContext#fireUserEventTriggered(Object)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '沿入站链传播空闲事件' },
+        { symbol: 'AbstractChannelHandlerContext#invokeUserEventTriggered(Object)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '在对应 executor 调度 userEventTriggered 回调' }
+      ],
+      'idle-action': [
+        { symbol: 'IdleStateEvent', location: 'handler/src/main/java/io/netty/handler/timeout/IdleStateEvent.java', note: '业务据此区分 READER/WRITER/ALL_IDLE 事件' },
+        { symbol: 'AbstractChannelHandlerContext#writeAndFlush(Object)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '可发送心跳包保活' },
+        { symbol: 'AbstractChannelHandlerContext#close(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '可关闭长时间空闲连接回收资源' }
+      ],
+      inbound: [
+        { symbol: 'AbstractChannelHandlerContext#fireChannelRead(Object)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '定位下一个入站处理器' },
+        { symbol: 'AbstractChannelHandlerContext#invokeChannelRead(Object)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '在对应 executor 线程执行 handler.channelRead' }
+      ],
+      outbound: [
+        { symbol: 'AbstractChannelHandlerContext#write(Object, ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '出站事件从当前节点向前查找 outbound context' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#write(Object, ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '消息过滤后写入 ChannelOutboundBuffer' },
+        { symbol: 'ChannelOutboundBuffer#addMessage(Object, int, ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/ChannelOutboundBuffer.java', note: 'write 阶段入 unflushed 队列' }
+      ],
+      'outbound-flush': [
+        { symbol: 'AbstractChannelHandlerContext#flush()', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '出站 flush 入口' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#flush0()', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'flush 驱动 doWrite() 触发真实 socket 写' },
+        { symbol: 'AbstractNioByteChannel#doWrite(ChannelOutboundBuffer)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '实际写 socket 的核心路径' }
+      ],
+      'tls-close-notify': [
+        { symbol: 'SslHandler#closeOutbound()', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '发送 close_notify，但不会直接关闭底层 Channel' },
+        { symbol: 'SslHandler#sslCloseFuture()', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '可等待 TLS 关闭完成结果' },
+        { symbol: 'SslHandler#notifyClosePromise(Throwable)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '完成时发布 SslCloseCompletionEvent' }
+      ],
+      'write-buffer': [
+        { symbol: 'ChannelOutboundBuffer#addMessage(Object, int, ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/ChannelOutboundBuffer.java', note: 'write 阶段先进入 unflushed 队列' },
+        { symbol: 'ChannelOutboundBuffer#addFlush()', location: 'transport/src/main/java/io/netty/channel/ChannelOutboundBuffer.java', note: 'flush 后从 unflushed 转为 flushedEntry' }
+      ],
+      'write-flush0': [
+        { symbol: 'AbstractChannel.AbstractUnsafe#flush0()', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '统一 flush 入口（含关闭/可写性保护）' },
+        { symbol: 'AbstractNioByteChannel#doWrite(ChannelOutboundBuffer)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: 'writeSpinCount 控制本轮写次数' }
+      ],
+      'write-spin-exhausted': [
+        { symbol: 'AbstractNioByteChannel#doWrite(ChannelOutboundBuffer)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: 'writeSpinCount 用尽仍未写完' },
+        { symbol: 'AbstractNioByteChannel#incompleteWrite(boolean)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '写不完时进入 incompleteWrite 分支' }
+      ],
+      'write-incomplete': [
+        { symbol: 'AbstractNioByteChannel#incompleteWrite(boolean)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '未写完时决定 setOpWrite 或异步补 flush' },
+        { symbol: 'AbstractNioByteChannel#setOpWrite()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '注册 OP_WRITE 等待下轮可写通知' }
+      ],
+      'write-ready': [
+        { symbol: 'NioEventLoop#processSelectedKey(SelectionKey, AbstractNioChannel)', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: 'readyOps 命中 OP_WRITE 分支' },
+        { symbol: 'NioEventLoop#processSelectedKey -> unsafe.forceFlush()', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: '可写事件到来时继续冲刷队列' },
+        { symbol: 'AbstractNioChannel.AbstractNioUnsafe#forceFlush()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: '直接调用 super.flush0() 立即写' }
+      ],
+      'write-drained': [
+        { symbol: 'ChannelOutboundBuffer#removeBytes(long)', location: 'transport/src/main/java/io/netty/channel/ChannelOutboundBuffer.java', note: '按已写字节推进 flushedEntry 并完成 promise' },
+        { symbol: 'AbstractNioByteChannel#clearOpWrite()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '队列写空后取消 OP_WRITE 关注' }
+      ],
+      'bp-high-water': [
+        { symbol: 'ChannelOutboundBuffer#incrementPendingOutboundBytes(long)', location: 'transport/src/main/java/io/netty/channel/ChannelOutboundBuffer.java', note: '累计 pendingOutboundBytes' },
+        { symbol: 'ChannelOutboundBuffer#setUnwritable(boolean)', location: 'transport/src/main/java/io/netty/channel/ChannelOutboundBuffer.java', note: '超过高水位后标记为不可写' },
+        { symbol: 'ChannelOutboundBuffer#fireChannelWritabilityChanged(boolean)', location: 'transport/src/main/java/io/netty/channel/ChannelOutboundBuffer.java', note: '触发 channelWritabilityChanged() 事件' }
+      ],
+      'bp-disable-autoread': [
+        { symbol: 'AbstractChannelHandlerContext#fireChannelWritabilityChanged()', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '业务 handler 感知 writability 变化' },
+        { symbol: 'DefaultChannelConfig#setAutoRead(boolean)', location: 'transport/src/main/java/io/netty/channel/DefaultChannelConfig.java', note: '关闭 autoRead 后停止主动 read' },
+        { symbol: 'AbstractNioChannel.AbstractNioUnsafe#removeReadOp()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: 'finally 分支移除 OP_READ 兴趣位' }
+      ],
+      'bp-drain-current-read': [
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#read()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '已在进行的读循环仍会完成' },
+        { symbol: 'AbstractNioChannel.AbstractNioUnsafe#removeReadOp()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: '!autoRead 且 readPending=false 时收敛 OP_READ' }
+      ],
+      'bp-manual-read': [
+        { symbol: 'Channel#read()', location: 'transport/src/main/java/io/netty/channel/Channel.java', note: '业务侧主动触发单次拉取' },
+        { symbol: 'AbstractChannelHandlerContext#read()', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '沿链路调用到 HeadContext.read' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#beginRead()', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '进入 doBeginRead 重新挂回 OP_READ' }
+      ],
+      'bp-manual-read-complete': [
+        { symbol: 'NioEventLoop#processSelectedKey(SelectionKey, AbstractNioChannel)', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: '命中 OP_READ 后调度 unsafe.read()' },
+        { symbol: 'AbstractNioByteChannel.NioByteUnsafe#read()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '本轮读取后 fireChannelReadComplete' },
+        { symbol: 'AbstractNioChannel.AbstractNioUnsafe#removeReadOp()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: '!autoRead 且 readPending=false 时再次收敛 OP_READ' }
+      ],
+      'bp-drain': [
+        { symbol: 'AbstractChannel.AbstractUnsafe#flush0()', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '继续 flush 消化堆积数据' },
+        { symbol: 'AbstractNioByteChannel#doWrite(ChannelOutboundBuffer)', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioByteChannel.java', note: '循环写出直到写完或写不动' }
+      ],
+      'bp-low-water': [
+        { symbol: 'ChannelOutboundBuffer#decrementPendingOutboundBytes(long)', location: 'transport/src/main/java/io/netty/channel/ChannelOutboundBuffer.java', note: 'flush 成功后降低 pendingOutboundBytes' },
+        { symbol: 'ChannelOutboundBuffer#setWritable(boolean)', location: 'transport/src/main/java/io/netty/channel/ChannelOutboundBuffer.java', note: '低于低水位后恢复可写并再次通知' }
+      ],
+      'bp-enable-autoread': [
+        { symbol: 'DefaultChannelConfig#setAutoRead(boolean)', location: 'transport/src/main/java/io/netty/channel/DefaultChannelConfig.java', note: '恢复 autoRead 时会触发 channel.read()' },
+        { symbol: 'AbstractNioChannel#doBeginRead()', location: 'transport/src/main/java/io/netty/channel/nio/AbstractNioChannel.java', note: '重新关注 OP_READ，恢复读流量' }
+      ],
+      'task-submit': [
+        { symbol: 'SingleThreadEventExecutor#execute(Runnable)', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '跨线程提交任务入口' },
+        { symbol: 'SingleThreadEventExecutor#addTask(Runnable)', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '任务入 taskQueue，必要时触发 wakeup' }
+      ],
+      'task-io-phase': [
+        { symbol: 'NioEventLoop#run()', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: 'I/O 与任务交替执行主循环' },
+        { symbol: 'NioEventLoop#setIoRatio(int)', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: '调节 processSelectedKeys 与 runAllTasks 时间配比' },
+        { symbol: 'SingleThreadEventExecutor#runAllTasks(long)', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '按时间片执行普通/到期任务' }
+      ],
+      'task-scheduled': [
+        { symbol: 'AbstractScheduledEventExecutor#schedule(Runnable, long, TimeUnit)', location: 'common/src/main/java/io/netty/util/concurrent/AbstractScheduledEventExecutor.java', note: '定时任务进入 scheduledTaskQueue' },
+        { symbol: 'SingleThreadEventExecutor#fetchFromScheduledTaskQueue()', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '到期任务搬运到 taskQueue' }
+      ],
+      'task-tail': [
+        { symbol: 'SingleThreadEventExecutor#afterRunningAllTasks()', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: 'runAllTasks 结束后的扩展点' },
+        { symbol: 'SingleThreadEventLoop#afterRunningAllTasks()', location: 'transport/src/main/java/io/netty/channel/SingleThreadEventLoop.java', note: '执行 tailTasks 收尾逻辑' }
+      ],
+      'shutdown-request': [
+        { symbol: 'MultiThreadEventExecutorGroup#shutdownGracefully(long, long, TimeUnit)', location: 'common/src/main/java/io/netty/util/concurrent/MultiThreadEventExecutorGroup.java', note: '向每个 EventLoop 广播优雅停机请求' },
+        { symbol: 'SingleThreadEventExecutor#shutdownGracefully(long, long, TimeUnit)', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '记录 quietPeriod/timeout 并切入 SHUTTING_DOWN' },
+        { symbol: 'SingleThreadEventExecutor#terminationFuture()', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '外部通过 Future 等待停机完成' }
+      ],
+      'shutdown-quiet-period': [
+        { symbol: 'SingleThreadEventExecutor#confirmShutdown()', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '循环确认是否满足 quietPeriod/timeout 退出条件' },
+        { symbol: 'SingleThreadEventExecutor#runAllTasks()', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '停机阶段继续清空普通/到期任务' },
+        { symbol: 'SingleThreadEventExecutor#runShutdownHooks()', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '执行注册的 shutdown hooks' }
+      ],
+      'shutdown-close-all': [
+        { symbol: 'NioEventLoop#run()', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: 'isShuttingDown() 分支进入 closeAll() + confirmShutdown()' },
+        { symbol: 'NioEventLoop#closeAll()', location: 'transport/src/main/java/io/netty/channel/nio/NioEventLoop.java', note: '遍历 selector.keys() 关闭剩余 Channel/NioTask' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#close(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '关闭通道并触发 inactive/unregistered' }
+      ],
+      'shutdown-terminated': [
+        { symbol: 'MultiThreadEventExecutorGroup#terminationFuture()', location: 'common/src/main/java/io/netty/util/concurrent/MultiThreadEventExecutorGroup.java', note: '所有子 EventLoop 终止后完成' },
+        { symbol: 'SingleThreadEventExecutor#offerTask(Runnable)', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '终止后新增任务会走 reject 路径' },
+        { symbol: 'SingleThreadEventExecutor#reject()', location: 'common/src/main/java/io/netty/util/concurrent/SingleThreadEventExecutor.java', note: '抛出 RejectedExecutionException 阻止继续提交' }
+      ],
+      'decode-exception': [
+        { symbol: 'ByteToMessageDecoder#channelRead(ChannelHandlerContext, Object)', location: 'codec/src/main/java/io/netty/handler/codec/ByteToMessageDecoder.java', note: 'decode 抛异常时会透传/封装为 DecoderException 并沿 pipeline 传播' },
+        { symbol: 'LengthFieldBasedFrameDecoder#failIfNecessary(boolean)', location: 'codec/src/main/java/io/netty/handler/codec/LengthFieldBasedFrameDecoder.java', note: 'failFast 策略决定 TooLongFrameException 抛出时机' },
+        { symbol: 'TooLongFrameException', location: 'codec/src/main/java/io/netty/handler/codec/TooLongFrameException.java', note: '帧超长场景的标准解码异常类型' }
+      ],
+      'tls-handshake-failure': [
+        { symbol: 'SslHandler#setHandshakeFailure(ChannelHandlerContext, Throwable)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '握手失败时关闭引擎并失败 handshakePromise' },
+        { symbol: 'SslHandler#setHandshakeFailureTransportFailure(ChannelHandlerContext, Throwable)', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: 'TLS 控制帧写失败时发布失败事件并关闭连接' },
+        { symbol: 'SslHandler#handshakeFuture()', location: 'handler/src/main/java/io/netty/handler/ssl/SslHandler.java', note: '业务通过 Future 感知握手失败结果' }
+      ],
+      'exception-close': [
+        { symbol: 'AbstractChannelHandlerContext#invokeExceptionCaught(Throwable)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '异常事件沿入站链传播' },
+        { symbol: 'AbstractChannelHandlerContext#close(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: 'ctx.close() 通过出站链路传递到 HeadContext' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#close(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '关闭底层 channel 并触发后续 inactive/unregistered' }
+      ],
+      'exception-tail-fallback': [
+        { symbol: 'AbstractChannelHandlerContext#fireExceptionCaught(Throwable)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '未消费异常继续沿入站链传播' },
+        { symbol: 'DefaultChannelPipeline.TailContext#exceptionCaught(ChannelHandlerContext, Throwable)', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: '到达 TailContext 时进入默认兜底处理' },
+        { symbol: 'DefaultChannelPipeline#onUnhandledInboundException(Throwable)', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: '记录未处理异常告警，避免静默丢失' }
+      ],
+      'close-sequence': [
+        { symbol: 'AbstractChannelHandlerContext#close(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannelHandlerContext.java', note: '出站 close 事件从当前 handler 传播到 HeadContext' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#close(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'closeExecutor/inFlush0 分支会 invokeLater；普通分支直接调用 fireChannelInactiveAndDeregister' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#fireChannelInactiveAndDeregister(boolean)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '统一汇入 deregister(voidPromise(), fireChannelInactive)' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#deregister(ChannelPromise, boolean)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'deregister 内再次 invokeLater(...)，在任务里 doDeregister 后触发事件' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#invokeLater(Runnable)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '通过 eventLoop.execute(task) 避免在当前入站调用栈重入触发事件' }
+      ],
+      'close-delayed': [
+        { symbol: 'AbstractChannel.AbstractUnsafe#close(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'closeExecutor/inFlush0 导致 invokeLater 延迟触发' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#invokeLater(Runnable)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '延迟任务在后续 EventLoop 中执行' }
+      ],
+      'close-shortcircuit': [
+        { symbol: 'AbstractChannel.AbstractUnsafe#close(ChannelPromise)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: 'closeInitiated/closeFuture 已完成时直接完成 promise' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#deregister(ChannelPromise, boolean)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '未注册时直接完成，不触发事件' }
+      ],
+      'channel-inactive': [
+        { symbol: 'AbstractChannel.AbstractUnsafe#deregister(ChannelPromise, boolean)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '在 invokeLater 任务中 doDeregister 后按条件 fireChannelInactive()' },
+        { symbol: 'DefaultChannelPipeline#fireChannelInactive()', location: 'transport/src/main/java/io/netty/channel/DefaultChannelPipeline.java', note: 'inactive 事件沿 pipeline 入站传播' }
+      ],
+      deregister: [
+        { symbol: 'AbstractChannel.AbstractUnsafe#deregister(ChannelPromise, boolean)', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '实际注销逻辑通过 invokeLater(...) 延迟到后续 EventLoop 任务执行' },
+        { symbol: 'AbstractChannel.AbstractUnsafe#deregister(... ) -> fireChannelUnregistered()', location: 'transport/src/main/java/io/netty/channel/AbstractChannel.java', note: '同一延迟任务中先 doDeregister()，再在 channelInactive 之后触发 channelUnregistered' }
+      ]
+    };
+
+    function syncScenarioButtons(activeScenario = state.scenario) {
+      Object.entries(scenarioButtons).forEach(([key, button]) => {
+        if (!button) return;
+        const active = key === activeScenario;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+
+    function getActiveSteps() {
+      const order = scenarioStepOrder[state.scenario];
+      const baseSteps = order && Array.isArray(order)
+        ? order.map(id => stepById.get(id)).filter(Boolean)
+        : steps.filter(step => !step.branch || step.branch === state.scenario);
+      return baseSteps.filter(stepMatchesFilters);
+    }
+
+    function describeNode(nodeId) {
+      const node = getNodeElement(nodeId);
+      const title = node?.querySelector('.title')?.textContent || nodeId;
+      const detail = nodeDescriptions[nodeId] || '该节点用于承接当前步骤的调用路径。';
+      return `<strong>${escapeHtml(title)}</strong>${escapeHtml(detail)}`;
+    }
+
+    function selectNode(nodeId, options = {}) {
+      state.selectedNode = nodeId || '';
+      nodeElements.forEach(node => {
+        node.classList.toggle('selected', node.dataset.node === state.selectedNode);
+      });
+
+      if (!els.nodeInspector) return;
+      if (!state.selectedNode) {
+        els.nodeInspector.textContent = '选择一个节点查看其在线程模型中的职责与作用。';
+        return;
+      }
+
+      els.nodeInspector.innerHTML = describeNode(state.selectedNode);
+      if (options.scrollIntoView) {
+        const node = getNodeElement(state.selectedNode);
+        node?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    }
+
+    function initNodeInteractions() {
+      nodeElements.forEach(node => {
+        const title = node.querySelector('.title')?.textContent || node.dataset.node;
+        node.setAttribute('tabindex', '0');
+        node.setAttribute('role', 'button');
+        node.setAttribute('aria-label', `${title} 节点，点击查看职责`);
+        node.addEventListener('click', () => selectNode(node.dataset.node));
+        node.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectNode(node.dataset.node);
+          }
+        });
+      });
+    }
+
+    function nodeCenter(id) {
+      const node = getNodeElement(id);
+      if (!node || !stageCanvas) return null;
+      const rect = node.getBoundingClientRect();
+      const base = stageCanvas.getBoundingClientRect();
+      return {
+        x: rect.left - base.left + rect.width / 2,
+        y: rect.top - base.top + rect.height / 2
+      };
+    }
+
+    function drawStaticLines() {
+      if (!flowLines) return;
+      staticGroup.innerHTML = '';
+      staticLinks.forEach(([from, to]) => {
+        const start = nodeCenter(from);
+        const end = nodeCenter(to);
+        if (!start || !end) return;
+        const line = document.createElementNS(svgNS, 'line');
+        line.setAttribute('x1', start.x);
+        line.setAttribute('y1', start.y);
+        line.setAttribute('x2', end.x);
+        line.setAttribute('y2', end.y);
+        line.classList.add('flow-line', 'static');
+        staticGroup.appendChild(line);
+      });
+    }
+
+    function resizeFlowLines() {
+      if (!flowLines || !stageCanvas) return;
+      const rect = stageCanvas.getBoundingClientRect();
+      flowLines.setAttribute('width', rect.width);
+      flowLines.setAttribute('height', rect.height);
+      flowLines.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`);
+      drawStaticLines();
+      dynamicGroup.innerHTML = '';
+    }
+
+    function animateLink(from, to, tone = 'inbound', linger = 180) {
+      if (!flowLines || state.reducedMotion) return;
+      const start = nodeCenter(from);
+      const end = nodeCenter(to);
+      if (!start || !end) return;
+      const line = document.createElementNS(svgNS, 'line');
+      line.setAttribute('x1', start.x);
+      line.setAttribute('y1', start.y);
+      line.setAttribute('x2', end.x);
+      line.setAttribute('y2', end.y);
+      line.classList.add('flow-line', tone);
+      dynamicGroup.appendChild(line);
+
+      const dot = document.createElementNS(svgNS, 'circle');
+      dot.classList.add('flow-dot', tone);
+      dot.setAttribute('r', state.reducedMotion ? 2.8 : 4);
+      dynamicGroup.appendChild(dot);
+
+      const duration = state.reducedMotion ? 180 : Math.max(220, 520 / state.speed);
+      let startTime;
+      function tick(ts) {
+        if (!startTime) startTime = ts;
+        const t = Math.min(1, (ts - startTime) / duration);
+        const x = start.x + (end.x - start.x) * t;
+        const y = start.y + (end.y - start.y) * t;
+        dot.setAttribute('cx', x);
+        dot.setAttribute('cy', y);
+        if (t < 1) {
+          requestAnimationFrame(tick);
+        } else {
+          setTimeout(() => {
+            line.remove();
+            dot.remove();
+          }, linger);
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+
+    async function playAnims(anims = [], token) {
+      const interval = state.reducedMotion ? 120 : Math.max(140, 300 / state.speed);
+      for (const item of anims) {
+        if (token !== undefined && token !== state.stepToken) return false;
+        animateLink(item.from, item.to, item.tone || 'inbound');
+        await delay(interval);
+        if (token !== undefined && token !== state.stepToken) return false;
+      }
+      return true;
+    }
+
+    function stopStepAnimation() {
+      state.animToken += 1;
+      dynamicGroup.innerHTML = '';
+    }
+
+    async function startStepAnimation(step) {
+      if (state.reducedMotion) return;
+      const token = state.animToken;
+      const linger = Math.max(220, 320 / state.speed);
+      const interval = Math.max(140, 260 / state.speed);
+
+      if (step.chain === 'inbound' || step.chain === 'outbound') {
+        const chain = step.chain === 'inbound' ? inboundChain : outboundChain;
+        while (token === state.animToken) {
+          for (let i = 0; i < chain.length; i += 1) {
+            if (token !== state.animToken) return;
+            clearHighlights();
+            const node = getNodeElement(chain[i]);
+            if (node) {
+              node.classList.add('active');
+              node.classList.add(step.chain);
+            }
+            if (i > 0) {
+              animateLink(chain[i - 1], chain[i], step.chain, linger);
+            }
+            await delay(interval);
+          }
+          await delay(Math.max(120, 240 / state.speed));
+        }
+        return;
+      }
+
+      if (!step.anim || step.anim.length === 0) return;
+      while (token === state.animToken) {
+        for (const item of step.anim) {
+          if (token !== state.animToken) return;
+          animateLink(item.from, item.to, item.tone || 'inbound', linger);
+          await delay(interval);
+        }
+        await delay(Math.max(120, 220 / state.speed));
+      }
+    }
+
+    function log(message) {
+      const time = new Date().toLocaleTimeString();
+      state.log.push(`[${time}] ${message}`);
+      if (state.log.length > 120) state.log.shift();
+      renderLog();
+    }
+
+    function renderLog() {
+      els.logList.innerHTML = state.log.map(line => `<div class="line">${escapeHtml(line)}</div>`).join('');
+      els.logList.scrollTop = els.logList.scrollHeight;
+    }
+
+    function updateScenarioBadge() {
+      if (!els.scenarioBadge) return;
+      const meta = scenarioMeta[state.scenario] || scenarioMeta.normal;
+      const tags = Array.isArray(meta.tags) ? meta.tags : [];
+      const tagHtml = tags.length
+        ? `<span class="badge-tags">${tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</span>`
+        : '';
+      els.scenarioBadge.innerHTML = `<span class="badge-title">场景：${escapeHtml(meta.label)}</span>${tagHtml}`;
+      els.scenarioBadge.classList.toggle('exception', meta.className === 'exception');
+    }
+
+    function updateRunState() {
+      if (!els.runStateText || !els.runDot) return;
+      const activeSteps = getActiveSteps();
+      const done = activeSteps.length > 0 && state.stepIndex >= activeSteps.length;
+      if (state.running) {
+        els.runStateText.textContent = '状态：播放中';
+        els.runDot.classList.add('running');
+      } else if (done) {
+        els.runStateText.textContent = '状态：已完成';
+        els.runDot.classList.remove('running');
+      } else {
+        els.runStateText.textContent = '状态：已暂停';
+        els.runDot.classList.remove('running');
+      }
+    }
+
+    function updateStepNavigator() {
+      const activeSteps = getActiveSteps();
+      const total = activeSteps.length;
+      const executed = state.currentIndex >= 0 ? Math.min(state.currentIndex + 1, total) : 0;
+      const percent = total ? Math.round((executed / total) * 100) : 0;
+      const max = Math.max(total - 1, 0);
+      const sliderValue = state.currentIndex >= 0 ? Math.min(state.currentIndex, max) : 0;
+
+      if (els.stepRange) {
+        els.stepRange.max = String(max);
+        els.stepRange.value = String(sliderValue);
+        els.stepRange.disabled = total === 0;
+      }
+      if (els.stepProgressText) {
+        els.stepProgressText.textContent = `进度 ${executed} / ${total}`;
+      }
+      if (els.stepProgressPercent) {
+        els.stepProgressPercent.textContent = `${percent}%`;
+      }
+    }
+
+    function updateControlState() {
+      const activeSteps = getActiveSteps();
+      const hasNext = state.stepIndex < activeSteps.length;
+      const hasPrev = state.currentIndex >= 0;
+
+      els.btnPlay.disabled = state.running || !hasNext;
+      els.btnPause.disabled = !state.running;
+      els.btnPrev.disabled = state.running || !hasPrev;
+      els.btnStep.disabled = state.running || !hasNext;
+    }
+
+    function buildTag(label, classNames, filterTag) {
+      const safeLabel = escapeHtml(label);
+      const isActive = filterTag && state.filters && state.filters.has(filterTag);
+      const activeClass = isActive ? ' active' : '';
+      const clickableClass = filterTag ? ' clickable' : '';
+      const dataAttrs = filterTag
+        ? ` data-filter-tag="${filterTag}" role="button" tabindex="0" aria-label="过滤：${safeLabel}" aria-pressed="${isActive ? 'true' : 'false'}"`
+        : '';
+      return `<span class="tag ${classNames}${clickableClass}${activeClass}"${dataAttrs}>${safeLabel}</span>`;
+    }
+
+    function buildStepTags(step) {
+      const tags = [];
+      const scope = step.scope;
+      if (scope) {
+        const scopeLabel = scopeLabels[scope] || scope;
+        const scopeClassName = scopeClass[scope] || '';
+        const filterTag = scope === 'client' ? 'client' : '';
+        const classNames = filterTag
+          ? `scope ${scopeClassName} filter ${filterTag}`
+          : `scope ${scopeClassName}`;
+        tags.push(buildTag(scopeLabel, classNames, filterTag || null));
+      }
+
+      const filterTags = getStepTags(step)
+        .filter(tag => filterTagSet.has(tag))
+        .filter(tag => !(scope === 'client' && tag === 'client'));
+
+      filterTags.forEach(tag => {
+        const label = filterTagLabels[tag] || tag;
+        tags.push(buildTag(label, `filter ${tag}`, tag));
+      });
+
+      return tags.join('');
+    }
+
+    function renderStepsList(activeIndex = state.currentIndex) {
+      const activeSteps = getActiveSteps();
+      els.flowSteps.innerHTML = activeSteps.map((step, idx) => {
+        const active = idx === activeIndex ? 'active' : '';
+        const ariaCurrent = idx === activeIndex ? 'step' : 'false';
+        const safeTitle = escapeHtml(step.title);
+        const tags = buildStepTags(step);
+        const tagBlock = tags ? `<div class="tag-list">${tags}</div>` : '';
+        return `<div class="flow-step ${active}" data-step-index="${idx}" role="button" tabindex="0" aria-current="${ariaCurrent}" aria-label="跳转到步骤 ${idx + 1}: ${safeTitle}"><div class="step-title">${idx + 1}. ${safeTitle}</div>${tagBlock}</div>`;
+      }).join('');
+    }
+
+    function syncUi() {
+      updateScenarioBadge();
+      updateRunState();
+      updateControlState();
+      updateStepNavigator();
+      renderStepsList(state.currentIndex);
+      syncFilterButtons();
+      syncFilterBadges();
+    }
+
+    const inboundChain = ['child-channel', 'head-context', 'handler-1', 'handler-2', 'handler-3', 'handler-4', 'tail-context'];
+    const outboundChain = ['handler-4', 'handler-3', 'handler-2', 'handler-1', 'head-context', 'child-channel'];
+
+    function delay(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function clearHighlights() {
+      nodeElements.forEach(node => node.classList.remove('active', 'inbound', 'outbound'));
+    }
+
+    function applyHighlights(step) {
+      const tone = step.tone || 'inbound';
+      (step.highlight || []).forEach(id => {
+        const node = getNodeElement(id);
+        if (node) {
+          node.classList.add('active');
+          node.classList.add(tone);
+        }
+      });
+    }
+
+    async function highlightChain(chain, tone, token) {
+      const baseDelay = state.reducedMotion ? 120 : 260;
+      const stepDelay = Math.max(80, baseDelay / state.speed);
+      let prev = null;
+      for (const id of chain) {
+        if (token !== undefined && token !== state.stepToken) return false;
+        clearHighlights();
+        const node = getNodeElement(id);
+        if (node) {
+          node.classList.add('active');
+          node.classList.add(tone);
+        }
+        if (prev && !state.reducedMotion) {
+          animateLink(prev, id, tone);
+        }
+        prev = id;
+        await delay(stepDelay);
+        if (token !== undefined && token !== state.stepToken) return false;
+      }
+      return true;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderSourceAnchors(step) {
+      if (!els.sourceAnchorList) return;
+      const anchors = step?.id ? (stepSourceAnchors[step.id] || []) : [];
+      if (!anchors.length) {
+        els.sourceAnchorList.innerHTML = '<li class="source-empty">当前步骤暂无源码锚点。</li>';
+        return;
+      }
+
+      els.sourceAnchorList.innerHTML = anchors.map(anchor => {
+        const symbol = escapeHtml(anchor.symbol);
+        const location = escapeHtml(anchor.location);
+        const note = anchor.note ? `<span class="source-note">${escapeHtml(anchor.note)}</span>` : '';
+        return `<li class="source-item"><code class="source-symbol">${symbol}</code><code class="source-location">${location}</code>${note}</li>`;
+      }).join('');
+    }
+
+    function updateStatus(step) {
+      const methods = Array.isArray(step.methods) ? step.methods : [];
+      els.statusStep.textContent = `当前步骤: ${step.title}`;
+      els.statusThread.textContent = `线程: ${step.thread}`;
+      els.statusChannel.textContent = `Channel: ${step.channel}`;
+      els.statusKey.textContent = `SelectionKey: ${step.key}`;
+      els.methodList.innerHTML = methods.length
+        ? methods.map(item => `<li>${escapeHtml(item)}</li>`).join('')
+        : '<li>暂无调用链信息</li>';
+      renderSourceAnchors(step);
+    }
+
+    async function runStep(step, index, token) {
+      stopStepAnimation();
+      clearHighlights();
+      updateStatus(step);
+      state.currentIndex = typeof index === 'number' ? index : state.currentIndex;
+
+      if (!state.selectedNode) {
+        const focusNode = step.highlight?.[0] || step.anim?.[0]?.to || step.anim?.[0]?.from;
+        if (focusNode) selectNode(focusNode);
+      }
+
+      log(`${step.title}（${step.thread}）`);
+      syncUi();
+      if (token !== undefined && token !== state.stepToken) return false;
+      if (step.chain === 'inbound') {
+        const ok = await highlightChain(inboundChain, 'inbound', token);
+        if (!ok) return false;
+        startStepAnimation(step);
+        return true;
+      }
+      if (step.chain === 'outbound') {
+        const ok = await highlightChain(outboundChain, 'outbound', token);
+        if (!ok) return false;
+        startStepAnimation(step);
+        return true;
+      }
+      applyHighlights(step);
+      const ok = await playAnims(step.anim || [], token);
+      if (!ok) return false;
+      startStepAnimation(step);
+      return true;
+    }
+
+    async function playLoop(token) {
+      while (state.running && token === state.playToken) {
+        const activeSteps = getActiveSteps();
+        if (state.stepIndex >= activeSteps.length) {
+          state.running = false;
+          syncUi();
+          break;
+        }
+
+        const index = state.stepIndex;
+        const step = activeSteps[index];
+        const stepToken = ++state.stepToken;
+        const ok = await runStep(step, index, stepToken);
+        if (!ok) continue;
+
+        state.stepIndex += 1;
+        syncUi();
+
+        if (state.stepIndex >= activeSteps.length) {
+          state.running = false;
+          syncUi();
+          break;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, state.reducedMotion ? 160 : Math.max(320, 900 / state.speed)));
+        if (!state.running || token !== state.playToken) break;
+      }
+      syncUi();
+    }
+
+    function stopPlayback() {
+      state.running = false;
+      state.playToken += 1;
+      stopStepAnimation();
+      syncUi();
+    }
+
+    async function jumpToStep(index) {
+      const activeSteps = getActiveSteps();
+      if (!activeSteps.length) return;
+      const target = Math.max(0, Math.min(index, activeSteps.length - 1));
+
+      stopPlayback();
+      state.stepIndex = target;
+
+      const step = activeSteps[target];
+      const stepToken = ++state.stepToken;
+      const ok = await runStep(step, target, stepToken);
+      if (!ok || stepToken !== state.stepToken) return;
+
+      state.stepIndex = target + 1;
+      syncUi();
+    }
+
+    async function stepPrev() {
+      if (state.running) return;
+      const activeSteps = getActiveSteps();
+      if (!activeSteps.length || state.currentIndex < 0) return;
+      const targetIndex = Math.max(0, Math.min(state.stepIndex - 2, activeSteps.length - 1));
+      await jumpToStep(targetIndex);
+    }
+
+    function resetState() {
+      state.running = false;
+      state.stepIndex = 0;
+      state.currentIndex = -1;
+      state.playToken += 1;
+      state.stepToken += 1;
+      state.log = [];
+      stopStepAnimation();
+      clearHighlights();
+      updateStatus({ title: '-', thread: '-', channel: '-', key: '-', methods: [] });
+      renderLog();
+      syncUi();
+      selectNode(state.selectedNode);
+    }
+
+    function setScenario(next) {
+      if (state.scenario === next) return;
+      state.scenario = next;
+
+      syncScenarioButtons(next);
+
+      resetState();
+      const meta = scenarioMeta[next] || scenarioMeta.normal;
+      log(`切换场景：${meta.label}`);
+    }
+
+    els.btnPlay.addEventListener('click', () => {
+      const activeSteps = getActiveSteps();
+      if (state.running || state.stepIndex >= activeSteps.length) return;
+      state.running = true;
+      state.playToken += 1;
+      syncUi();
+      playLoop(state.playToken);
+    });
+
+    els.btnPause.addEventListener('click', () => {
+      stopPlayback();
+    });
+
+    els.btnStep.addEventListener('click', async () => {
+      if (state.running) return;
+      const activeSteps = getActiveSteps();
+      if (state.stepIndex >= activeSteps.length) return;
+
+      const index = state.stepIndex;
+      const step = activeSteps[index];
+      const stepToken = ++state.stepToken;
+      const ok = await runStep(step, index, stepToken);
+      if (!ok || stepToken !== state.stepToken) return;
+
+      state.stepIndex = index + 1;
+      syncUi();
+    });
+
+    els.btnReset.addEventListener('click', () => {
+      resetState();
+      log('状态已重置');
+    });
+
+    els.btnNormal.addEventListener('click', () => {
+      setScenario('normal');
+    });
+
+    els.btnStartup.addEventListener('click', () => {
+      setScenario('startup');
+    });
+
+    els.btnException.addEventListener('click', () => {
+      setScenario('exception');
+    });
+
+    els.btnWrite.addEventListener('click', () => {
+      setScenario('write');
+    });
+
+    els.btnBackpressure.addEventListener('click', () => {
+      setScenario('backpressure');
+    });
+
+    els.btnTaskloop.addEventListener('click', () => {
+      setScenario('taskloop');
+    });
+
+    els.btnTlsSuccess.addEventListener('click', () => {
+      setScenario('tls-success');
+    });
+
+    els.btnTlsTimeout.addEventListener('click', () => {
+      setScenario('tls-timeout');
+    });
+
+    els.btnIdle.addEventListener('click', () => {
+      setScenario('idle');
+    });
+
+    els.btnShutdown.addEventListener('click', () => {
+      setScenario('shutdown');
+    });
+
+    els.btnHalfclose.addEventListener('click', () => {
+      setScenario('halfclose');
+    });
+
+    els.btnClient.addEventListener('click', () => {
+      setScenario('client');
+    });
+
+    filterButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        const tag = button.dataset.filter;
+        if (!tag) return;
+        updateFilters(tag);
+      });
+    });
+
+    els.btnPrev.addEventListener('click', () => {
+      stepPrev();
+    });
+
+    els.stepRange.addEventListener('input', event => {
+      const activeSteps = getActiveSteps();
+      const total = activeSteps.length;
+      const value = parseInt(event.target.value, 10);
+      if (!Number.isFinite(value) || total === 0) return;
+
+      const preview = Math.max(1, Math.min(value + 1, total));
+      const percent = Math.round((preview / total) * 100);
+      els.stepProgressText.textContent = `预览 ${preview} / ${total}`;
+      els.stepProgressPercent.textContent = `${percent}%`;
+    });
+
+    els.stepRange.addEventListener('change', event => {
+      const value = parseInt(event.target.value, 10);
+      if (!Number.isFinite(value)) return;
+      jumpToStep(value);
+    });
+
+    els.flowSteps.addEventListener('click', event => {
+      const target = event.target instanceof Element ? event.target : null;
+      const tag = target ? target.closest('[data-filter-tag]') : null;
+      if (tag) {
+        const tagValue = tag.getAttribute('data-filter-tag');
+        if (tagValue) updateFilters(tagValue);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      const card = target ? target.closest('[data-step-index]') : null;
+      if (!card) return;
+      const index = parseInt(card.dataset.stepIndex || '', 10);
+      if (!Number.isFinite(index)) return;
+      jumpToStep(index);
+    });
+
+    els.flowSteps.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const target = event.target instanceof Element ? event.target : null;
+      const tag = target ? target.closest('[data-filter-tag]') : null;
+      if (tag) {
+        const tagValue = tag.getAttribute('data-filter-tag');
+        if (tagValue) updateFilters(tagValue);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      const card = target ? target.closest('[data-step-index]') : null;
+      if (!card) return;
+      event.preventDefault();
+      const index = parseInt(card.dataset.stepIndex || '', 10);
+      if (!Number.isFinite(index)) return;
+      jumpToStep(index);
+    });
+
+    function handleFilterTagActivation(tagElement, event) {
+      const tagValue = tagElement ? tagElement.getAttribute('data-filter-tag') : '';
+      if (!tagValue) return false;
+      updateFilters(tagValue);
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return true;
+    }
+
+    document.addEventListener('click', event => {
+      const target = event.target instanceof Element ? event.target : null;
+      const tag = target ? target.closest('[data-filter-tag]') : null;
+      if (!tag) return;
+      if (els.flowSteps && els.flowSteps.contains(tag)) return;
+      handleFilterTagActivation(tag, event);
+    }, true);
+
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const target = event.target instanceof Element ? event.target : null;
+      const tag = target ? target.closest('[data-filter-tag]') : null;
+      if (!tag) return;
+      if (els.flowSteps && els.flowSteps.contains(tag)) return;
+      handleFilterTagActivation(tag, event);
+    }, true);
+
+    window.addEventListener('keydown', event => {
+      const target = event.target;
+      const isTyping = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      if (isTyping) return;
+
+      if (event.key === ' ') {
+        event.preventDefault();
+        if (state.running) {
+          stopPlayback();
+        } else {
+          els.btnPlay.click();
+        }
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        if (!state.running) els.btnStep.click();
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        stepPrev();
+      } else if (event.key === 'r' || event.key === 'R') {
+        event.preventDefault();
+        resetState();
+        log('状态已重置（快捷键）');
+      } else if ((event.key === 's' || event.key === 'S') && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('startup');
+      } else if (event.key === '1' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('normal');
+      } else if (event.key === '2' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('exception');
+      } else if (event.key === '3' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('write');
+      } else if (event.key === '4' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('backpressure');
+      } else if (event.key === '5' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('taskloop');
+      } else if (event.key === '6' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('tls-success');
+      } else if (event.key === '7' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('tls-timeout');
+      } else if (event.key === '8' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('idle');
+      } else if (event.key === '9' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('shutdown');
+      } else if ((event.key === 'h' || event.key === 'H') && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('halfclose');
+      } else if (event.key === '0' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        setScenario('client');
+      }
+    });
+
+    let resizeFrame = 0;
+
+    function scheduleResizeFlowLines() {
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        resizeFlowLines();
+      });
+    }
+
+    window.addEventListener('resize', scheduleResizeFlowLines);
+
+    if (window.ResizeObserver && stageCanvas) {
+      const stageObserver = new ResizeObserver(scheduleResizeFlowLines);
+      stageObserver.observe(stageCanvas);
+    }
+
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => {
+        scheduleResizeFlowLines();
+      });
+    }
+
+    initNodeInteractions();
+    setTimeout(scheduleResizeFlowLines, 60);
+
+    syncScenarioButtons();
+    syncFilterButtons();
+    validateScenarioOrder();
+
+    resetState();
+    syncUi();
+    log('准备就绪，可播放、下一步、点击步骤卡片或拖动进度条。');
+  </script>
+</body>
+</html>
